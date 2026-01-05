@@ -4,17 +4,25 @@ A lightweight PyTorch-like deep learning library built from scratch with custom 
 
 ## 📊 Benchmark & Accuracy Analysis
 
-Performance comparison on a **512×512 Input Image** (except 3×3 on 256×256) across varying kernel sizes.
-Error is calculated against **SciPy (Ground Truth)** and verified against **PyTorch**.
+Performance comparison on a **512×512 Input Image** (except 3×3 on 256×256).
 
-| Kernel Size | Pure NumPy (CPU) | SciPy (CPU) | Custom CUDA (GPU) | PyTorch (GPU) | CUDA Speedup (vs NumPy) | Max Abs Error (vs SciPy) | Verified vs PyTorch |
+### Phase 1: FP32 Precision Benchmarks
+| Kernel Size | Pure NumPy (CPU) | SciPy (CPU) | MacroTorch | PyTorch (GPU) | CUDA Speedup | Max Abs Error (vs SciPy) | Max Abs Error (vs PyTorch) |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **3×3** | 3.64 ms | 3.02 ms | **1.20 ms** | 0.02 ms | **3.02x** | `7.15e-07` | ✅ Exact Match |
-| **11×11** | 35.23 ms | 89.13 ms | **2.64 ms** | 0.24 ms | **13.33x** | `2.29e-05` | ✅ Exact Match |
-| **31×31** | 127.01 ms | 543.55 ms | **5.78 ms** | 1.50 ms | **21.98x** | `5.19e-04` | ✅ Exact Match |
-| **63×63** | 280.89 ms | 1908.45 ms | **14.98 ms** | 3.39 ms | **18.76x** | `4.46e-03` | ✅ Exact Match |
+| **3×3** | 3.48 ms | 5.01 ms | **2.00 ms** | 0.06 ms | **1.74x** | `7.15e-07` | `0.00e+00` |
+| **11×11** | 46.21 ms | 91.36 ms | **2.63 ms** | 0.25 ms | **17.59x** | `2.29e-05` | `0.00e+00` |
+| **31×31** | 131.67 ms | 534.35 ms | **6.07 ms** | 1.51 ms | **21.69x** | `5.19e-04` | `0.00e+00` |
+| **63×63** | 285.23 ms | 1933.72 ms | **14.94 ms** | 4.31 ms | **19.09x** | `4.46e-03` | `0.00e+00` |
 
-> **Note:** Error increases slightly with kernel size due to floating-point accumulation, but remains within acceptable GPU tolerance. Matches PyTorch output exactly.
+### Phase 2: FP16 Precision Benchmarks
+| Kernel Size | Pure NumPy (CPU) | SciPy (CPU) | MacroTorch | PyTorch (GPU) | CUDA Speedup | Max Abs Error (vs SciPy) | Max Abs Error (vs PyTorch) |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **3×3** | 2.20 ms | 3.07 ms | **1.26 ms** | 0.04 ms | **1.75x** | `0.00e+00` | `9.77e-04` |
+| **11×11** | 45.45 ms | 87.74 ms | **2.21 ms** | 0.11 ms | **20.59x** | `2.29e-05` | `1.56e-02` |
+| **31×31** | 126.54 ms | 626.36 ms | **6.29 ms** | 1.41 ms | **20.13x** | `5.19e-04` | `1.25e-01` |
+| **63×63** | 566.94 ms | 2305.84 ms | **15.45 ms** | 3.97 ms | **36.71x** | `4.46e-03` | `5.00e-01` |
+
+> **Note:** FP32 achieves exact match with PyTorch. FP16 shows expected deviation due to lower precision accumulation in large kernels.
 
 ### 🛠️ Key Features
 - **Shared Memory Tiling:** Optimized kernels for different kernel sizes (Tiny to Large).

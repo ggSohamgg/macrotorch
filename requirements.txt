@@ -1,4 +1,2 @@
-numpy
+numpy<2.0
 numba
-scipy
-cudatoolkit

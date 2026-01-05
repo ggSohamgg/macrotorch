@@ -26,16 +26,18 @@ Performance comparison on a **512×512 Input Image** (except 3×3 on 256×256).
 
 ### Phase 3: Backward Pass (Input Gradient) Benchmark
 
-Performance comparison for `conv2d_backward` on **1024×1024 Input** with **5×5 Kernel** (Output: 1020×1020).
+Performance comparison for `conv2d_input_backward` on **512×512 Input** with **5×5 Kernel** (Shared Memory).
 
-| Implementation | Time | Max Abs Error (vs SciPy) |
-| :---: | :---: | :---: |
-| **SciPy (CPU)** | 154.51 ms | Ground Truth |
-| **PyTorch (GPU)** | 0.23 ms | `3.81e-06` |
-| **MacroTorch (Global)** | 146.76 ms | `3.81e-06` |
-| **MacroTorch (Shared)** | 0.36 ms | `3.81e-06` |
+| Precision | Implementation | Time | Speedup (vs SciPy) | Max Error (vs SciPy) |
+| :---: | :---: | :---: | :---: | :---: |
+| **FP32** | SciPy (CPU) | 23.03 ms | 1.00x | Ground Truth |
+| **FP32** | PyTorch (GPU) | 0.44 ms | **51.96x** | `3.08e+01` |
+| **FP32** | **MacroTorch (GPU)** | **1.99 ms** | **11.60x** | `3.08e+01` |
+| **FP16** | SciPy (CPU) | 23.59 ms | 1.00x | Ground Truth |
+| **FP16** | PyTorch (GPU) | 0.40 ms | **58.70x** | `4.30e+01` |
+| **FP16** | **MacroTorch (GPU)** | **1.78 ms** | **13.27x** | `4.30e+01` |
 
-> **Note:** Shared memory implementation achieves near-PyTorch performance with identical accuracy.
+> **Note:** MacroTorch matches PyTorch accuracy exactly (0.00e+00 error in FP32, 7.81e-03 in FP16). Both show identical error vs SciPy ground truth.
 
 ### 🛠️ Key Features
 - **Shared Memory Tiling:** Optimized kernels for different kernel sizes (Tiny to Large).

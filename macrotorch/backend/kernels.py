@@ -1,5 +1,6 @@
 from numba import cuda , float32
 import numpy as np
+import math
 
 
 def make_conv2d_kernel(shared_size , dtype):
@@ -8,7 +9,7 @@ def make_conv2d_kernel(shared_size , dtype):
         f"Shared memory {bytes_needed} bytes exceeds 48KB limit!"
     
     @cuda.jit
-    def conv2d_kernel(A , K , out):
+    def conv2d_kernel(A , K , out, padding):
         tx = cuda.threadIdx.x
         ty = cuda.threadIdx.y
         bx = cuda.blockIdx.x
@@ -27,14 +28,15 @@ def make_conv2d_kernel(shared_size , dtype):
         sh = cuda.shared.array((shared_size , shared_size) , dtype = dtype)
         sh_h = BH + Kh - 1
         sh_w = BW + Kw - 1
-        base_i = by * BH  
-        base_j = bx * BW  
+        
+        base_i = by * BH - padding
+        base_j = bx * BW - padding
 
         for ii in range(ty , sh_h , BH):  
             for jj in range(tx , sh_w , BW):  
                 global_i = base_i + ii
                 global_j = base_j + jj
-                if global_i < H and global_j < W:
+                if 0 <= global_i < H and 0 <= global_j < W:
                     sh[ii , jj] = A[global_i , global_j]
                 else:
                     sh[ii , jj] = dtype(0.0)
@@ -53,18 +55,22 @@ def make_conv2d_kernel(shared_size , dtype):
 
 def make_conv2d_direct(dtype):
     @cuda.jit
-    def conv2d_direct(A , K , out):
-        i = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y  # Row
-        j = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x  # Column
+    def conv2d_direct(A , K , out, padding):
+        i = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y  
+        j = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x  
         
         out_h , out_w = out.shape
         Kh , Kw = K.shape
+        H, W = A.shape
 
         if i < out_h and j < out_w:
             s = float32(0.0)
             for u in range(Kh):
                 for v in range(Kw):
-                    s += float32(A[i + u , j + v]) * float32(K[u , v])
+                    in_row = i - padding + u
+                    in_col = j - padding + v
+                    if 0 <= in_row < H and 0 <= in_col < W:
+                        s += float32(A[in_row , in_col]) * float32(K[u , v])
             out[i , j] = s
     
     return conv2d_direct

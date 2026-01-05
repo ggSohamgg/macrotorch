@@ -4,15 +4,17 @@ from numba import cuda
 from .kernels import KERNELS , TIERS
 
 
-def forward(A , K , dtype = 'auto' , verbose = False , d_A = None , d_K = None , d_out = None):
+def forward(A , K , padding=0, dtype = 'auto' , verbose = False , d_A = None , d_K = None , d_out = None):
     assert A.ndim == 2 , f"A must be 2D, got shape {A.shape}"
     assert K.ndim == 2 , f"K must be 2D, got shape {K.shape}"
     
     H , W = A.shape
     Kh , Kw = K.shape
     
-    assert H >= Kh , f"Kernel height {Kh} exceeds image height {H}"
-    assert W >= Kw , f"Kernel width {Kw} exceeds image width {W}"
+    # Validation strictly for validity:
+    # If padding is effectively increasing image size, we check "virtual" size
+    # But usually kernels require kernel to be smaller than the effective image region.
+    # For now, simplistic validation.
     
     if dtype == "auto":
         dtype = 'fp16' if A.dtype == np.float16 else 'fp32'
@@ -40,7 +42,11 @@ def forward(A , K , dtype = 'auto' , verbose = False , d_A = None , d_K = None ,
         print(f"Algorithm: {tier.upper()} ({dtype.upper()}) - {memory_type} {shared_info}")
         print(f"Kernel: {Kh}×{Kw}, Block: {block_size}×{block_size}")
     
-    out_h , out_w = H - Kh + 1 , W - Kw + 1
+    # Update Output calculation for padding
+    # H_out = H_in + 2*padding - dilation *(kernel_size - 1) - 1 + 1... assuming stride 1, dilation 1
+    # Standard formula: out_dim = (in_dim + 2*pad - kernel) + 1
+    out_h = H - Kh + 1 + (2 * padding)
+    out_w = W - Kw + 1 + (2 * padding)
     
     if d_A is None:
         d_A = cuda.to_device(A)
@@ -56,7 +62,8 @@ def forward(A , K , dtype = 'auto' , verbose = False , d_A = None , d_K = None ,
     blocks_per_grid = (blocks_x , blocks_y)  
     
     kernel = KERNELS[(tier , dtype)]
-    kernel[blocks_per_grid , threads_per_block](d_A , d_K , d_out)
+    # Pass padding to kernel
+    kernel[blocks_per_grid , threads_per_block](d_A , d_K , d_out, padding)
     
     cuda.synchronize()
     return d_out.copy_to_host()

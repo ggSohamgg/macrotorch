@@ -3,6 +3,10 @@ import numpy as np
 import math
 
 
+# =============================================================================
+# FORWARD KERNELS
+# =============================================================================
+
 def make_conv2d_kernel(shared_size , dtype):
     bytes_needed = shared_size * shared_size * (2 if dtype == np.float16 else 4)
     assert bytes_needed <= 49152 , \
@@ -76,6 +80,79 @@ def make_conv2d_direct(dtype):
     return conv2d_direct
 
 
+# =============================================================================
+# BACKWARD KERNELS (Input Gradient)
+# =============================================================================
+
+def make_conv2d_backward_shared(shared_size, dtype):
+    @cuda.jit
+    def conv2d_backward_input_shared(grad_out, K, grad_A):
+        tx, ty = cuda.threadIdx.x, cuda.threadIdx.y
+        bx, by = cuda.blockIdx.x, cuda.blockIdx.y
+        BW, BH = cuda.blockDim.x, cuda.blockDim.y
+        
+        i = by * BH + ty
+        j = bx * BW + tx
+        
+        H, W = grad_A.shape
+        Kh, Kw = K.shape
+        out_h, out_w = grad_out.shape
+        
+        sh = cuda.shared.array((shared_size, shared_size), dtype=dtype)
+        
+        base_i = by * BH - (Kh - 1)
+        base_j = bx * BW - (Kw - 1)
+        
+        sh_h = BH + Kh - 1
+        sh_w = BW + Kw - 1
+        
+        for ii in range(ty, sh_h, BH):
+            for jj in range(tx, sh_w, BW):
+                gr, gc = base_i + ii, base_j + jj
+                if 0 <= gr < out_h and 0 <= gc < out_w:
+                    sh[ii, jj] = grad_out[gr, gc]
+                else:
+                    sh[ii, jj] = dtype(0.0)
+        
+        cuda.syncthreads()
+        
+        if i < H and j < W:
+            s = float32(0.0)
+            for u in range(Kh):
+                for v in range(Kw):
+                    sh_val = float32(sh[ty + (Kh - 1 - u), tx + (Kw - 1 - v)])
+                    k_val = float32(K[u, v])
+                    s += sh_val * k_val
+            grad_A[i, j] = s
+
+    return conv2d_backward_input_shared
+
+
+def make_conv2d_backward_global(dtype):
+    @cuda.jit
+    def conv2d_backward_input_global(grad_out, K, grad_A):
+        i, j = cuda.grid(2)
+        H, W = grad_A.shape
+        Kh, Kw = K.shape
+        out_h, out_w = grad_out.shape
+        
+        if i < H and j < W:
+            s = float32(0.0)
+            for u in range(Kh):
+                for v in range(Kw):
+                    out_r = i - u
+                    out_c = j - v
+                    if 0 <= out_r < out_h and 0 <= out_c < out_w:
+                       s += float32(grad_out[out_r, out_c]) * float32(K[u, v])
+            grad_A[i, j] = s
+
+    return conv2d_backward_input_global
+
+
+# =============================================================================
+# KERNEL REGISTRY AND TIER CONFIG
+# =============================================================================
+
 TIERS = {
     'tiny':   {'shared_size': 32  , 'block_size': 16 , 'use_shared': True}  ,
     'small':  {'shared_size': 48  , 'block_size': 16 , 'use_shared': True}  ,
@@ -85,6 +162,7 @@ TIERS = {
 }
 
 KERNELS = {}
+BACKWARD_KERNELS = {}
 
 for tier_name , config in TIERS.items():
     if config['use_shared']:
@@ -93,7 +171,9 @@ for tier_name , config in TIERS.items():
             dtype_type = np.float16 if dtype_name == 'fp16' else np.float32
             key = (tier_name , dtype_name)
             KERNELS[key] = make_conv2d_kernel(shared_size , dtype_type)
+            BACKWARD_KERNELS[key] = make_conv2d_backward_shared(shared_size, dtype_type)
 
 for dtype_name in ['fp16' , 'fp32']:
     dtype_type = np.float16 if dtype_name == 'fp16' else np.float32
     KERNELS[('xlarge' , dtype_name)] = make_conv2d_direct(dtype_type)
+    BACKWARD_KERNELS[('xlarge', dtype_name)] = make_conv2d_backward_global(dtype_type)

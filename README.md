@@ -24,7 +24,21 @@ Performance comparison on a **512×512 Input Image** (except 3×3 on 256×256).
 
 > **Note:** FP32 achieves exact match with PyTorch. FP16 shows expected deviation due to lower precision accumulation in large kernels.
 
+### Phase 3: Backward Pass (Input Gradient) Benchmark
+
+Performance comparison for `conv2d_backward` on **1024×1024 Input** with **5×5 Kernel** (Output: 1020×1020).
+
+| Implementation | Time | Max Abs Error (vs SciPy) |
+| :---: | :---: | :---: |
+| **SciPy (CPU)** | 154.51 ms | Ground Truth |
+| **PyTorch (GPU)** | 0.23 ms | `3.81e-06` |
+| **MacroTorch (Global)** | 146.76 ms | `3.81e-06` |
+| **MacroTorch (Shared)** | 0.36 ms | `3.81e-06` |
+
+> **Note:** Shared memory implementation achieves near-PyTorch performance with identical accuracy.
+
 ### 🛠️ Key Features
 - **Shared Memory Tiling:** Optimized kernels for different kernel sizes (Tiny to Large).
 - **FP32 Accumulation:** FP16 kernels use FP32 accumulators to prevent overflow/underflow while saving 50% memory bandwidth.
 - **Match PyTorch Accuracy:** Zero MAE (Mean Absolute Error) vs PyTorch in FP32 mode.
+- **Backward Pass Support:** Full gradient computation for input with both shared and global memory implementations.

@@ -1,7 +1,7 @@
 import numpy as np
 import math
 from numba import cuda
-from .kernels import KERNELS , TIERS
+from .kernels import KERNELS , BACKWARD_KERNELS, TIERS
 
 
 def forward(A , K , padding=0, dtype = 'auto' , verbose = False , d_A = None , d_K = None , d_out = None):
@@ -69,5 +69,63 @@ def forward(A , K , padding=0, dtype = 'auto' , verbose = False , d_A = None , d
     return d_out.copy_to_host()
 
 
-def backward():
-    pass
+def backward(grad_out, K, padding=0, dtype='auto', verbose=False):
+    """
+    Computes gradient w.r.t Input (grad_A)
+    This corresponds to a 'Full' convolution of grad_out with rotated K.
+    """
+    assert grad_out.ndim == 2
+    assert K.ndim == 2
+    
+    H_out, W_out = grad_out.shape
+    Kh, Kw = K.shape
+    
+    if dtype == "auto":
+        dtype = 'fp16' if grad_out.dtype == np.float16 else 'fp32'
+        
+    # Determine input shape from output shape (inverse of forward)
+    # H_in = H_out + Kh - 1 - 2*padding
+    H_in = H_out + Kh - 1 - (2 * padding)
+    W_in = W_out + Kw - 1 - (2 * padding)
+    
+    max_k = max(Kh, Kw)
+    
+    # Select Tier
+    if max_k <= 7:
+        tier = 'tiny'
+    elif max_k <= 15:
+        tier = 'small'
+    elif max_k <= 63:
+        tier = 'medium'
+    elif max_k <= 93:
+        tier = 'large'
+    else:
+        tier = 'xlarge'
+    
+    config = TIERS[tier]
+    block_size = config['block_size']
+    
+    if verbose:
+        print(f"BWD Algorithm: {tier.upper()} ({dtype.upper()})")
+
+    # Allocate Grad_A
+    grad_A = np.zeros((H_in, W_in), dtype=np.float32)
+    
+    d_grad_out = cuda.to_device(grad_out)
+    d_K = cuda.to_device(K)
+    d_grad_A = cuda.to_device(grad_A)
+    
+    threads_per_block = (block_size, block_size)
+    blocks_y = math.ceil(H_in / block_size)
+    blocks_x = math.ceil(W_in / block_size)
+    blocks_per_grid = (blocks_x, blocks_y)
+    
+    kernel = BACKWARD_KERNELS[(tier, dtype)]
+    
+    # Note: Backward input doesn't use padding arg inside kernel the same way forward does, 
+    # as the logic is effectively a full convolution. 
+    # Current implementation handles validation logic implicitly.
+    kernel[blocks_per_grid, threads_per_block](d_grad_out, d_K, d_grad_A)
+    
+    cuda.synchronize()
+    return d_grad_A.copy_to_host()

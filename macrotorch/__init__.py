@@ -1,1 +1,1 @@
-from .backend import dispatch as conv2d
+from .backend.dispatch import forward as conv2d

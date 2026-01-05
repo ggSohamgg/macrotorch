@@ -122,10 +122,8 @@ def backward(grad_out, K, padding=0, dtype='auto', verbose=False):
     
     kernel = BACKWARD_KERNELS[(tier, dtype)]
     
-    # Note: Backward input doesn't use padding arg inside kernel the same way forward does, 
-    # as the logic is effectively a full convolution. 
-    # Current implementation handles validation logic implicitly.
-    kernel[blocks_per_grid, threads_per_block](d_grad_out, d_K, d_grad_A)
+    # Pass padding to backward kernel
+    kernel[blocks_per_grid, threads_per_block](d_grad_out, d_K, padding, d_grad_A)
     
     cuda.synchronize()
     return d_grad_A.copy_to_host()

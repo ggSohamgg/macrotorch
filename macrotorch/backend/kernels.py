@@ -86,7 +86,7 @@ def make_conv2d_direct(dtype):
 
 def make_conv2d_backward_shared(shared_size, dtype):
     @cuda.jit
-    def conv2d_backward_input_shared(grad_out, K, grad_A):
+    def conv2d_backward_input_shared(grad_out, K, padding, grad_A):
         tx, ty = cuda.threadIdx.x, cuda.threadIdx.y
         bx, by = cuda.blockIdx.x, cuda.blockIdx.y
         BW, BH = cuda.blockDim.x, cuda.blockDim.y
@@ -100,8 +100,9 @@ def make_conv2d_backward_shared(shared_size, dtype):
         
         sh = cuda.shared.array((shared_size, shared_size), dtype=dtype)
         
-        base_i = by * BH - (Kh - 1)
-        base_j = bx * BW - (Kw - 1)
+        # Adjust base for padding
+        base_i = by * BH - (Kh - 1) + padding
+        base_j = bx * BW - (Kw - 1) + padding
         
         sh_h = BH + Kh - 1
         sh_w = BW + Kw - 1
@@ -130,7 +131,7 @@ def make_conv2d_backward_shared(shared_size, dtype):
 
 def make_conv2d_backward_global(dtype):
     @cuda.jit
-    def conv2d_backward_input_global(grad_out, K, grad_A):
+    def conv2d_backward_input_global(grad_out, K, padding, grad_A):
         i, j = cuda.grid(2)
         H, W = grad_A.shape
         Kh, Kw = K.shape
@@ -140,8 +141,9 @@ def make_conv2d_backward_global(dtype):
             s = float32(0.0)
             for u in range(Kh):
                 for v in range(Kw):
-                    out_r = i - u
-                    out_c = j - v
+                    # General formula with padding support
+                    out_r = i + padding - u
+                    out_c = j + padding - v
                     if 0 <= out_r < out_h and 0 <= out_c < out_w:
                        s += float32(grad_out[out_r, out_c]) * float32(K[u, v])
             grad_A[i, j] = s

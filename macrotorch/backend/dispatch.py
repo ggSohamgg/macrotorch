@@ -241,7 +241,7 @@ def input_backward(grad_out, K, padding=0, dtype='auto', verbose=False):
     return d_grad_A.copy_to_host()
 
 
-def bias_backward(grad_out, dtype='auto', verbose=False):
+def bias_backward(grad_out, dtype='auto', verbose=False, d_grad_out=None, d_grad_bias=None):
     """
     2D Convolution Backward Pass (Bias Gradient)
     
@@ -250,9 +250,9 @@ def bias_backward(grad_out, dtype='auto', verbose=False):
     
     Parameters
     ----------
-    grad_out : numpy.ndarray
+    grad_out : numpy.ndarray or cuda.devicearray
         Gradient flowing back from the next layer, shape (N, C, H, W).
-        4D batched tensor: (Batch, Channels, Height, Width).
+        Can be on CPU (numpy array) or GPU (cuda array).
         Supports float32 or float16 dtype.
     
     dtype : str, optional (default='auto')
@@ -262,58 +262,75 @@ def bias_backward(grad_out, dtype='auto', verbose=False):
     verbose : bool, optional (default=False)
         If True, prints execution details.
     
+    d_grad_out : cuda.devicearray, optional
+        Pre-allocated input on GPU (for benchmarking).
+        If provided, grad_out is ignored.
+    
+    d_grad_bias : cuda.devicearray, optional
+        Pre-allocated output on GPU (for benchmarking).
+        If provided, result is written here instead of creating new array.
+    
     Returns
     -------
-    numpy.ndarray
+    numpy.ndarray or cuda.devicearray
         Bias gradient of shape (C,) in float32.
-        One gradient value per channel.
+        Returns numpy array if d_grad_bias is None, otherwise returns device array.
     
     Examples
     --------
     >>> import numpy as np
-    >>> from macrotorch import bias_backward
+    >>> from macrotorch import Conv2d
     >>> 
-    >>> # Batched gradient (N=8, C=64, H=28, W=28)
+    >>> # Standard usage (CPU input)
     >>> grad_out = np.random.randn(8, 64, 28, 28).astype(np.float32)
-    >>> grad_bias = bias_backward(grad_out)
-    >>> print(grad_bias.shape)  # (64,)
+    >>> grad_bias = Conv2d.bias_backward(grad_out)
     >>> 
-    >>> # FP16 mode
-    >>> grad_out_fp16 = grad_out.astype(np.float16)
-    >>> grad_bias = bias_backward(grad_out_fp16)
+    >>> # Benchmarking mode (pre-allocated GPU arrays)
+    >>> from numba import cuda
+    >>> d_input = cuda.to_device(grad_out)
+    >>> d_output = cuda.device_array(64, dtype=np.float32)
+    >>> grad_bias = Conv2d.bias_backward(None, d_grad_out=d_input, d_grad_bias=d_output)
     
     Notes
     -----
-    This function expects 4D batched input (N, C, H, W).
-    For 2D single-channel convolution, use a simple np.sum(grad_out) instead.
+    For accurate benchmarking, use pre-allocated GPU arrays to avoid measuring
+    data transfer time. This function expects 4D batched input (N, C, H, W).
     """
-    assert grad_out.ndim == 4, f"Expected 4D input (N, C, H, W), got shape {grad_out.shape}"
+    if d_grad_out is None:
+        assert grad_out is not None, "Either grad_out or d_grad_out must be provided"
+        if hasattr(grad_out, '__cuda_array_interface__'):
+            d_grad_out = grad_out
+        else:
+            d_grad_out = cuda.to_device(grad_out)
     
-    N, C, H, W = grad_out.shape
-    
-    if dtype == "auto":
-        dtype = 'fp16' if grad_out.dtype == np.float16 else 'fp32'
+    # Get shape from device array
+    N, C, H, W = d_grad_out.shape
     
     if verbose:
-        print(f"Bias Backward: {dtype.upper()} | Shape: {grad_out.shape}")
+        print(f"Bias Backward: Shape: {d_grad_out.shape}")
     
-    # Allocate output (one gradient per channel)
-    grad_bias = np.zeros(C, dtype=np.float32)
+    return_host = False
+    if d_grad_bias is None:
+        # Allocate fresh memory on GPU and initialize to zero
+        d_grad_bias = cuda.device_array(C, dtype=np.float32)
+        # Initialize to zero (device memory is uninitialized)
+        cuda.to_device(np.zeros(C, dtype=np.float32), to=d_grad_bias)
+        return_host = True  # Return numpy array
+    else:
+        # User provided buffer - reset to zero before accumulating
+        cuda.to_device(np.zeros(C, dtype=np.float32), to=d_grad_bias)
     
-    d_grad_out = cuda.to_device(grad_out) 
-    d_grad_bias = cuda.to_device(grad_bias)
-    
-    # 3D grid: (W, H, C)
-    # 32x8x1 = 256 threads per block
-    threads_per_block = (32, 8, 1)  # (x=W, y=H, z=C)
+    threads_per_block = (32, 8, 1)  # 256 threads
     blocks_per_grid = (
         math.ceil(W / 32),  # x covers Width
         math.ceil(H / 8),   # y covers Height
-        C                   # z covers Channels (one z-layer per channel)
+        C                   # z covers Channels
     )
     
-    # Use single kernel (handles both FP16/FP32 via input conversion)
     BIAS_KERNEL[blocks_per_grid, threads_per_block](d_grad_out, d_grad_bias)
-    
     cuda.synchronize()
-    return d_grad_bias.copy_to_host()
+    
+    if return_host:
+        return d_grad_bias.copy_to_host()
+    else:
+        return d_grad_bias

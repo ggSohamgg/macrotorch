@@ -161,16 +161,31 @@ def make_conv2d_backward_global(dtype):
 def conv2d_backward_bias(grad_out, grad_bias):
     """
     Compute bias gradient for 4D batched input (N, C, H, W).
+    Uses shared memory reduction for better performance.
     Sums gradients across N, H, W dimensions for each channel.
     """
-    c, h, w = cuda.grid(3)
+    w, h, c = cuda.grid(3)
     N, C, H, W = grad_out.shape
+    s_block_sum = cuda.shared.array(1, dtype=float32)
     
+    tx = cuda.threadIdx.x
+    ty = cuda.threadIdx.y
+    tz = cuda.threadIdx.z
+    
+    if tx == 0 and ty == 0 and tz == 0:
+        s_block_sum[0] = float32(0.0)
+    
+    cuda.syncthreads()
     if c < C and h < H and w < W:
         thread_sum = float32(0.0)
         for n in range(N):
             thread_sum += float32(grad_out[n, c, h, w])
-        cuda.atomic.add(grad_bias, c, thread_sum)
+        cuda.atomic.add(s_block_sum, 0, thread_sum)
+
+    cuda.syncthreads()
+    
+    if tx == 0 and ty == 0 and tz == 0 and c < C:
+        cuda.atomic.add(grad_bias, c, s_block_sum[0])
 
 # =============================================================================
 # KERNEL REGISTRY AND TIER CONFIG

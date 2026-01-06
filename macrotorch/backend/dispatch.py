@@ -303,13 +303,14 @@ def bias_backward(grad_out, dtype='auto', verbose=False):
     d_grad_out = cuda.to_device(grad_out.astype(np.float32))
     d_grad_bias = cuda.to_device(grad_bias)
     
-    # 3D grid: (C, H, W)
-    block_size = 8  # Small block for reduction
-    threads_per_block = (block_size, block_size, block_size)
-    blocks_c = math.ceil(C / block_size)
-    blocks_h = math.ceil(H / block_size)
-    blocks_w = math.ceil(W / block_size)
-    blocks_per_grid = (blocks_c, blocks_h, blocks_w)
+    # Optimized 3D grid: (W, H, C)
+    # 32x8x1 = 256 threads per block (good occupancy)
+    threads_per_block = (32, 8, 1)  # (x=W, y=H, z=C)
+    blocks_per_grid = (
+        math.ceil(W / 32),  # x covers Width
+        math.ceil(H / 8),   # y covers Height
+        C                   # z covers Channels (one z-layer per channel)
+    )
     
     # Use single kernel (handles both FP16/FP32 via input conversion)
     BIAS_KERNEL[blocks_per_grid, threads_per_block](d_grad_out, d_grad_bias)

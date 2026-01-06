@@ -58,7 +58,7 @@ Performance comparison for `Conv2d.input_backward()` on **512×512 Input** with 
 
 ## Bias Gradient Backward Pass
 
-Performance comparison for `Conv2d.bias_backward()` on batched 4D input.
+Performance comparison for `Conv2d.bias_backward()` on batched 4D input with **shared memory reduction**.
 
 **Test Configuration**: Input shape `(32, 128, 64, 64)` - Batch=32, Channels=128, Height=64, Width=64
 
@@ -66,19 +66,19 @@ Performance comparison for `Conv2d.bias_backward()` on batched 4D input.
 
 | Implementation | Time (ms) | Speedup (vs SciPy) | Max Error (vs SciPy) |
 | :---: | :---: | :---: | :---: |
-| **SciPy (CPU)** | 6.65 ms | 1.00x | Ground Truth |
-| **PyTorch (GPU)** | 0.35 ms | **18.87x** | `2.44e-04` |
-| **MacroTorch (GPU)** | **1.82 ms** | **3.66x** | `3.42e-03` |
+| **SciPy (CPU)** | 5.54 ms | 1.00x | Ground Truth |
+| **PyTorch (GPU)** | 0.36 ms | **15.18x** | `2.44e-04` |
+| **MacroTorch (GPU)** | **0.96 ms** | **5.75x** | `3.51e-04` |
 
 ### FP16 Precision
 
 | Implementation | Time (ms) | Speedup (vs SciPy) | Max Error (vs SciPy) |
 | :---: | :---: | :---: | :---: |
-| **SciPy (CPU)** | 5.61 ms | 1.00x | Ground Truth |
-| **PyTorch (GPU)** | 0.32 ms | **17.53x** | `4.15e-01` |
-| **MacroTorch (GPU)** | **1.87 ms** | **2.99x** | `1.34e-03` |
+| **SciPy (CPU)** | 5.49 ms | 1.00x | Ground Truth |
+| **PyTorch (GPU)** | 0.32 ms | **17.21x** | `1.98e-01` |
+| **MacroTorch (GPU)** | **1.10 ms** | **4.98x** | `2.44e-04` |
 
-> **Note:** MacroTorch achieves 3-4x speedup over CPU with competitive accuracy. PyTorch's highly optimized reduction kernels are faster, but MacroTorch provides a solid custom implementation.
+> **Note:** Shared memory optimization improved performance by ~2x! MacroTorch now achieves 5-6x speedup over CPU with excellent accuracy.
 
 ---
 
@@ -87,6 +87,6 @@ Performance comparison for `Conv2d.bias_backward()` on batched 4D input.
 MacroTorch demonstrates:
 - ✅ **10-100x speedup** over CPU (SciPy) for forward convolutions
 - ✅ **11-13x speedup** over CPU for input gradient computation
-- ✅ **3-4x speedup** over CPU for bias gradient computation
+- ✅ **5-6x speedup** over CPU for bias gradient computation (with shared memory optimization)
 - ✅ **Exact accuracy match** with PyTorch in FP32 mode
 - ✅ **Competitive FP16 performance** with expected precision trade-offs

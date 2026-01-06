@@ -1,6 +1,6 @@
 # MacroTorch
 
-A lightweight PyTorch-like deep learning library built from scratch with custom CUDA kernels.
+Custom CUDA kernels for 2D convolution with PyTorch-style API. Optimized forward/backward passes with shared memory tiling. FP16/FP32 support, 5-100x CPU speedup.
 
 ## 🚀 Quick Start
 

@@ -300,11 +300,11 @@ def bias_backward(grad_out, dtype='auto', verbose=False):
     # Allocate output (one gradient per channel)
     grad_bias = np.zeros(C, dtype=np.float32)
     
-    d_grad_out = cuda.to_device(grad_out.astype(np.float32))
+    d_grad_out = cuda.to_device(grad_out) 
     d_grad_bias = cuda.to_device(grad_bias)
     
-    # Optimized 3D grid: (W, H, C)
-    # 32x8x1 = 256 threads per block (good occupancy)
+    # 3D grid: (W, H, C)
+    # 32x8x1 = 256 threads per block
     threads_per_block = (32, 8, 1)  # (x=W, y=H, z=C)
     blocks_per_grid = (
         math.ceil(W / 32),  # x covers Width

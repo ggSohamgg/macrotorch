@@ -176,6 +176,7 @@ def conv2d_backward_bias(grad_out, grad_bias):
         s_block_sum[0] = float32(0.0)
     
     cuda.syncthreads()
+
     if c < C and h < H and w < W:
         thread_sum = float32(0.0)
         for n in range(N):

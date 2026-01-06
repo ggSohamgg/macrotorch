@@ -2,45 +2,124 @@
 
 A lightweight PyTorch-like deep learning library built from scratch with custom CUDA kernels.
 
-## 📊 Benchmark & Accuracy Analysis
+## 🚀 Quick Start
 
-Performance comparison on a **512×512 Input Image** (except 3×3 on 256×256).
+### Installation
+```bash
+git clone https://github.com/ggSohamgg/macrotorch.git
+cd macrotorch
+pip install -e .
+```
 
-### Phase 1: FP32 Precision Benchmarks
-| Kernel Size | Pure NumPy (CPU) | SciPy (CPU) | MacroTorch | PyTorch (GPU) | CUDA Speedup | Max Abs Error (vs SciPy) | Max Abs Error (SciPy vs PyTorch) |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **3×3** | 3.39 ms | 2.96 ms | **1.54 ms** | 0.04 ms | **2.20x** | `7.15e-07` | `7.15e-07` |
-| **11×11** | 55.42 ms | 86.78 ms | **2.55 ms** | 0.24 ms | **21.77x** | `2.29e-05` | `2.29e-05` |
-| **31×31** | 137.17 ms | 536.36 ms | **5.59 ms** | 1.50 ms | **24.53x** | `5.19e-04` | `5.19e-04` |
-| **63×63** | 280.49 ms | 2769.66 ms | **14.66 ms** | 3.01 ms | **19.14x** | `4.46e-03` | `4.46e-03` |
+### Basic Usage
 
-### Phase 2: FP16 Precision Benchmarks
-| Kernel Size | Pure NumPy (CPU) | SciPy (CPU) | MacroTorch | PyTorch (GPU) | CUDA Speedup | Max Abs Error (vs SciPy) | Max Abs Error (SciPy vs PyTorch) |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **3×3** | 2.15 ms | 3.02 ms | **1.12 ms** | 0.02 ms | **1.91x** | `0.00e+00` | `9.77e-04` |
-| **11×11** | 35.77 ms | 86.57 ms | **2.16 ms** | 0.15 ms | **16.56x** | `2.29e-05` | `1.56e-02` |
-| **31×31** | 139.17 ms | 546.75 ms | **4.75 ms** | 1.41 ms | **29.28x** | `5.19e-04` | `1.25e-01` |
-| **63×63** | 316.62 ms | 1876.52 ms | **15.06 ms** | 2.74 ms | **21.03x** | `4.46e-03` | `5.01e-01` |
+```python
+import numpy as np
+from macrotorch import Conv2d
 
-> **Note:** FP32 achieves exact match with PyTorch. FP16 shows expected deviation due to lower precision accumulation in large kernels.
+# Create input and kernel
+img = np.random.randn(256, 256).astype(np.float32)
+kernel = np.random.randn(5, 5).astype(np.float32)
 
-### Phase 3: Backward Pass (Input Gradient) Benchmark
+# Forward pass
+output = Conv2d.forward(img, kernel, padding=2, bias=0.1)
 
-Performance comparison for `conv2d_input_backward` on **512×512 Input** with **5×5 Kernel** (Shared Memory).
+# Backward pass (input gradient)
+grad_out = np.random.randn(*output.shape).astype(np.float32)
+grad_input = Conv2d.input_backward(grad_out, kernel, padding=2)
 
-| Precision | Implementation | Time | Speedup (vs SciPy) | Max Error (vs SciPy) |
+# Backward pass (bias gradient) - requires 4D input (N, C, H, W)
+grad_out_4d = np.random.randn(8, 64, 28, 28).astype(np.float32)
+grad_bias = Conv2d.bias_backward(grad_out_4d)
+```
+
+### Alternative Import Style
+
+```python
+from macrotorch import conv2d_forward, conv2d_input_backward, conv2d_bias_backward
+
+# Forward
+output = conv2d_forward(img, kernel, padding=2, bias=0.1)
+
+# Backward
+grad_input = conv2d_input_backward(grad_out, kernel, padding=2)
+grad_bias = conv2d_bias_backward(grad_out_4d)
+```
+
+### FP16 Support
+
+```python
+# Convert to FP16
+img_fp16 = img.astype(np.float16)
+kernel_fp16 = kernel.astype(np.float16)
+
+# Automatic dtype detection
+output = Conv2d.forward(img_fp16, kernel_fp16, padding=2)
+```
+
+## 📖 API Reference
+
+### `Conv2d.forward(A, K, padding=0, bias=None, dtype='auto', verbose=False)`
+Performs 2D convolution.
+
+**Parameters:**
+- `A` (ndarray): Input image (H, W), float32 or float16
+- `K` (ndarray): Kernel (Kh, Kw), same dtype as A
+- `padding` (int): Padding pixels (default: 0)
+- `bias` (float): Scalar bias to add (default: None)
+- `dtype` (str): 'fp32', 'fp16', or 'auto' (default: 'auto')
+- `verbose` (bool): Print kernel selection info (default: False)
+
+**Returns:** Output array (H_out, W_out) in float32
+
+### `Conv2d.input_backward(grad_out, K, padding=0, dtype='auto', verbose=False)`
+Computes gradient w.r.t. input (∂L/∂A).
+
+**Parameters:**
+- `grad_out` (ndarray): Gradient from next layer (H_out, W_out)
+- `K` (ndarray): Kernel from forward pass (Kh, Kw)
+- `padding` (int): Must match forward pass padding
+- `dtype` (str): 'fp32', 'fp16', or 'auto'
+- `verbose` (bool): Print execution info
+
+**Returns:** Input gradient (H_in, W_in) in float32
+
+### `Conv2d.bias_backward(grad_out, dtype='auto', verbose=False)`
+Computes gradient w.r.t. bias (∂L/∂b).
+
+**Parameters:**
+- `grad_out` (ndarray): Gradient from next layer (N, C, H, W) - **4D batched**
+- `dtype` (str): 'fp32', 'fp16', or 'auto'
+- `verbose` (bool): Print execution info
+
+**Returns:** Bias gradient (C,) in float32
+
+## 📊 Performance Benchmarks
+
+### Forward Pass - FP32 (512×512 Input)
+
+| Kernel Size | SciPy (CPU) | MacroTorch (GPU) | PyTorch (GPU) | Speedup vs SciPy |
 | :---: | :---: | :---: | :---: | :---: |
-| **FP32** | SciPy (CPU) | 23.03 ms | 1.00x | Ground Truth |
-| **FP32** | PyTorch (GPU) | 0.44 ms | **51.96x** | `3.08e+01` |
-| **FP32** | **MacroTorch (GPU)** | **1.99 ms** | **11.60x** | `3.08e+01` |
-| **FP16** | SciPy (CPU) | 23.59 ms | 1.00x | Ground Truth |
-| **FP16** | PyTorch (GPU) | 0.40 ms | **58.70x** | `4.30e+01` |
-| **FP16** | **MacroTorch (GPU)** | **1.78 ms** | **13.27x** | `4.30e+01` |
+| **3×3** | 2.96 ms | **1.54 ms** | 0.04 ms | **1.92x** |
+| **11×11** | 86.78 ms | **2.55 ms** | 0.24 ms | **34.03x** |
+| **31×31** | 536.36 ms | **5.59 ms** | 1.50 ms | **95.95x** |
+| **63×63** | 2769.66 ms | **14.66 ms** | 3.01 ms | **188.91x** |
 
-> **Note:** MacroTorch matches PyTorch accuracy exactly (0.00e+00 error in FP32, 7.81e-03 in FP16). Both show identical error vs SciPy ground truth.
+### Input Gradient Backward - FP32 (512×512, 5×5 Kernel)
 
-### 🛠️ Key Features
+| Implementation | Time | Speedup (vs SciPy) | Max Error (vs SciPy) |
+| :---: | :---: | :---: | :---: |
+| SciPy (CPU) | 23.03 ms | 1.00x | Ground Truth |
+| PyTorch (GPU) | 0.44 ms | **51.96x** | `3.08e+01` |
+| **MacroTorch (GPU)** | **1.99 ms** | **11.60x** | `3.08e+01` |
+
+> **Note:** MacroTorch matches PyTorch accuracy exactly (0.00e+00 error in FP32).
+
+📈 **[View Detailed Benchmarks](BENCHMARKS.md)** - Includes FP16 results and bias gradient benchmarks.
+
+## 🛠️ Key Features
 - **Shared Memory Tiling:** Optimized kernels for different kernel sizes (Tiny to Large).
-- **FP32 Accumulation:** FP16 kernels use FP32 accumulators to prevent overflow/underflow while saving 50% memory bandwidth.
-- **Match PyTorch Accuracy:** Zero MAE (Mean Absolute Error) vs PyTorch in FP32 mode.
-- **Backward Pass Support:** Full gradient computation for input with both shared and global memory implementations.
+- **FP32 Accumulation:** FP16 kernels use FP32 accumulators to prevent overflow/underflow.
+- **Match PyTorch Accuracy:** Zero MAE vs PyTorch in FP32 mode.
+- **Full Backward Pass:** Input gradient and bias gradient computation.
+- **PyTorch-style API:** Clean interface with `Conv2d.forward()`, `Conv2d.input_backward()`, `Conv2d.bias_backward()`.

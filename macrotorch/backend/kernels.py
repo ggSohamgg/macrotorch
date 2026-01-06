@@ -13,7 +13,7 @@ def make_conv2d_kernel(shared_size , dtype):
         f"Shared memory {bytes_needed} bytes exceeds 48KB limit!"
     
     @cuda.jit
-    def conv2d_kernel(A , K , out, padding):
+    def conv2d_kernel(A , K , out, padding , bias):
         tx = cuda.threadIdx.x
         ty = cuda.threadIdx.y
         bx = cuda.blockIdx.x
@@ -52,6 +52,8 @@ def make_conv2d_kernel(shared_size , dtype):
             for u in range(Kh):
                 for v in range(Kw):
                     s += float32(sh[ty + u , tx + v]) * float32(K[u , v])  
+            if bias is not None:
+                s += float32(bias)
             out[i , j] = s
     
     return conv2d_kernel
@@ -59,7 +61,7 @@ def make_conv2d_kernel(shared_size , dtype):
 
 def make_conv2d_direct(dtype):
     @cuda.jit
-    def conv2d_direct(A , K , out, padding):
+    def conv2d_direct(A , K , out, padding , bias):
         i = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y  
         j = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x  
         
@@ -75,6 +77,8 @@ def make_conv2d_direct(dtype):
                     in_col = j - padding + v
                     if 0 <= in_row < H and 0 <= in_col < W:
                         s += float32(A[in_row , in_col]) * float32(K[u , v])
+            if bias is not None:
+                s += float32(bias)
             out[i , j] = s
     
     return conv2d_direct
@@ -141,7 +145,6 @@ def make_conv2d_backward_global(dtype):
             s = float32(0.0)
             for u in range(Kh):
                 for v in range(Kw):
-                    # General formula with padding support
                     out_r = i + padding - u
                     out_c = j + padding - v
                     if 0 <= out_r < out_h and 0 <= out_c < out_w:
@@ -150,6 +153,24 @@ def make_conv2d_backward_global(dtype):
 
     return conv2d_backward_input_global
 
+# =============================================================================
+# BACKWARD KERNELS (Bias Gradient)
+# =============================================================================
+
+@cuda.jit
+def conv2d_backward_bias(grad_out, grad_bias):
+    """
+    Compute bias gradient for 4D batched input (N, C, H, W).
+    Sums gradients across N, H, W dimensions for each channel.
+    """
+    c, h, w = cuda.grid(3)
+    N, C, H, W = grad_out.shape
+    
+    if c < C and h < H and w < W:
+        thread_sum = float32(0.0)
+        for n in range(N):
+            thread_sum += float32(grad_out[n, c, h, w])
+        cuda.atomic.add(grad_bias, c, thread_sum)
 
 # =============================================================================
 # KERNEL REGISTRY AND TIER CONFIG
@@ -179,3 +200,6 @@ for dtype_name in ['fp16' , 'fp32']:
     dtype_type = np.float16 if dtype_name == 'fp16' else np.float32
     KERNELS[('xlarge' , dtype_name)] = make_conv2d_direct(dtype_type)
     BACKWARD_KERNELS[('xlarge', dtype_name)] = make_conv2d_backward_global(dtype_type)
+
+# Bias Gradient Kernel (single kernel handles both FP16/FP32 via dispatcher conversion)
+BIAS_KERNEL = conv2d_backward_bias

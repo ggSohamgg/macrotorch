@@ -4,7 +4,7 @@ from numba import cuda
 from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, TIERS
 
 
-def forward(A , K , padding=0, bias=None, dtype = 'auto' , verbose = False , d_A = None , d_K = None , d_out = None):
+def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=None , d_K=None , d_out=None):
     """
     2D Convolution Forward Pass
     
@@ -13,65 +13,30 @@ def forward(A , K , padding=0, bias=None, dtype = 'auto' , verbose = False , d_A
     Parameters
     ----------
     A : numpy.ndarray
-        Input image/feature map of shape (H, W).
-        Supports float32 or float16 dtype.
-    
+        Input image/feature map of shape (H, W). Supports float32 or float16 dtype.
     K : numpy.ndarray
-        Convolution kernel/filter of shape (Kh, Kw).
-        Must have same dtype as A.
-    
+        Convolution kernel/filter of shape (Kh, Kw). Must have same dtype as A.
     padding : int, optional (default=0)
         Number of pixels to pad on all sides of the input.
-        Output size = (H - Kh + 1 + 2*padding, W - Kw + 1 + 2*padding)
-    
     bias : float or None, optional (default=None)
         Scalar bias value to add to each output element.
-        If None, no bias is added.
-    
     dtype : str, optional (default='auto')
         Precision mode: 'fp32', 'fp16', or 'auto'.
-        'auto' automatically detects from input dtype.
-    
     verbose : bool, optional (default=False)
         If True, prints kernel selection and execution details.
-    
     d_A, d_K, d_out : cuda device arrays, optional
-        Pre-allocated GPU memory (advanced usage).
-        If None, memory is automatically allocated.
+        Pre-allocated GPU memory for benchmarking.
     
     Returns
     -------
     numpy.ndarray
         Convolution output of shape (out_h, out_w) in float32.
-    
-    Examples
-    --------
-    >>> import numpy as np
-    >>> from macrotorch import conv2d_forward
-    >>> 
-    >>> # Basic usage
-    >>> img = np.random.randn(256, 256).astype(np.float32)
-    >>> kernel = np.random.randn(5, 5).astype(np.float32)
-    >>> output = conv2d_forward(img, kernel)
-    >>> 
-    >>> # With padding and bias
-    >>> output = conv2d_forward(img, kernel, padding=2, bias=0.1)
-    >>> 
-    >>> # FP16 mode
-    >>> img_fp16 = img.astype(np.float16)
-    >>> kernel_fp16 = kernel.astype(np.float16)
-    >>> output = conv2d_forward(img_fp16, kernel_fp16)
     """
     assert A.ndim == 2 , f"A must be 2D, got shape {A.shape}"
     assert K.ndim == 2 , f"K must be 2D, got shape {K.shape}"
     
     H , W = A.shape
     Kh , Kw = K.shape
-    
-    # Validation strictly for validity:
-    # If padding is effectively increasing image size, we check "virtual" size
-    # But usually kernels require kernel to be smaller than the effective image region.
-    # For now, simplistic validation.
     
     if dtype == "auto":
         dtype = 'fp16' if A.dtype == np.float16 else 'fp32'
@@ -99,9 +64,6 @@ def forward(A , K , padding=0, bias=None, dtype = 'auto' , verbose = False , d_A
         print(f"Algorithm: {tier.upper()} ({dtype.upper()}) - {memory_type} {shared_info}")
         print(f"Kernel: {Kh}×{Kw}, Block: {block_size}×{block_size}")
     
-    # Update Output calculation for padding
-    # H_out = H_in + 2*padding - dilation *(kernel_size - 1) - 1 + 1... assuming stride 1, dilation 1
-    # Standard formula: out_dim = (in_dim + 2*pad - kernel) + 1
     out_h = H - Kh + 1 + (2 * padding)
     out_w = W - Kw + 1 + (2 * padding)
     
@@ -110,7 +72,7 @@ def forward(A , K , padding=0, bias=None, dtype = 'auto' , verbose = False , d_A
     if d_K is None:
         d_K = cuda.to_device(K)
     if d_out is None:
-        out = np.zeros((out_h , out_w) , dtype = np.float32)
+        out = np.zeros((out_h , out_w) , dtype=np.float32)
         d_out = cuda.to_device(out)
     
     threads_per_block = (block_size , block_size)
@@ -119,7 +81,6 @@ def forward(A , K , padding=0, bias=None, dtype = 'auto' , verbose = False , d_A
     blocks_per_grid = (blocks_x , blocks_y)  
     
     kernel = KERNELS[(tier , dtype)]
-    # Pass padding and bias to kernel
     kernel[blocks_per_grid , threads_per_block](d_A , d_K , d_out, padding, bias)
     
     cuda.synchronize()
@@ -131,28 +92,17 @@ def input_backward(grad_out, K, padding=0, dtype='auto', verbose=False):
     2D Convolution Backward Pass (Input Gradient)
     
     Computes the gradient of the loss with respect to the input (∂L/∂A).
-    This is equivalent to a full convolution of grad_out with the kernel.
     
     Parameters
     ----------
     grad_out : numpy.ndarray
         Gradient flowing back from the next layer, shape (H_out, W_out).
-        This is the output of the forward pass.
-        Supports float32 or float16 dtype.
-    
     K : numpy.ndarray
-        Convolution kernel/filter of shape (Kh, Kw).
-        Same kernel used in the forward pass.
-        Must have same dtype as grad_out.
-    
+        Convolution kernel/filter of shape (Kh, Kw). Same kernel used in forward pass.
     padding : int, optional (default=0)
         Padding value used in the forward pass.
-        Must match the padding used during forward propagation.
-    
     dtype : str, optional (default='auto')
         Precision mode: 'fp32', 'fp16', or 'auto'.
-        'auto' automatically detects from grad_out dtype.
-    
     verbose : bool, optional (default=False)
         If True, prints kernel selection and execution details.
     
@@ -160,31 +110,6 @@ def input_backward(grad_out, K, padding=0, dtype='auto', verbose=False):
     -------
     numpy.ndarray
         Gradient with respect to input (grad_A) of shape (H_in, W_in) in float32.
-        Shape: (H_out + Kh - 1 - 2*padding, W_out + Kw - 1 - 2*padding)
-    
-    Examples
-    --------
-    >>> import numpy as np
-    >>> from macrotorch import conv2d_forward, conv2d_input_backward
-    >>> 
-    >>> # Forward pass
-    >>> img = np.random.randn(256, 256).astype(np.float32)
-    >>> kernel = np.random.randn(5, 5).astype(np.float32)
-    >>> output = conv2d_forward(img, kernel, padding=2)
-    >>> 
-    >>> # Backward pass (assume we have grad_out from loss)
-    >>> grad_out = np.random.randn(*output.shape).astype(np.float32)
-    >>> grad_input = conv2d_input_backward(grad_out, kernel, padding=2)
-    >>> 
-    >>> # FP16 mode
-    >>> grad_out_fp16 = grad_out.astype(np.float16)
-    >>> kernel_fp16 = kernel.astype(np.float16)
-    >>> grad_input = conv2d_input_backward(grad_out_fp16, kernel_fp16, padding=2)
-    
-    Notes
-    -----
-    This function computes only the gradient with respect to the INPUT.
-    For weight gradients (∂L/∂K) or bias gradients (∂L/∂b), use separate functions.
     """
     assert grad_out.ndim == 2
     assert K.ndim == 2
@@ -195,14 +120,11 @@ def input_backward(grad_out, K, padding=0, dtype='auto', verbose=False):
     if dtype == "auto":
         dtype = 'fp16' if grad_out.dtype == np.float16 else 'fp32'
         
-    # Determine input shape from output shape (inverse of forward)
-    # H_in = H_out + Kh - 1 - 2*padding
     H_in = H_out + Kh - 1 - (2 * padding)
     W_in = W_out + Kw - 1 - (2 * padding)
     
     max_k = max(Kh, Kw)
     
-    # Select Tier
     if max_k <= 7:
         tier = 'tiny'
     elif max_k <= 15:
@@ -220,7 +142,6 @@ def input_backward(grad_out, K, padding=0, dtype='auto', verbose=False):
     if verbose:
         print(f"BWD Algorithm: {tier.upper()} ({dtype.upper()})")
 
-    # Allocate Grad_A
     grad_A = np.zeros((H_in, W_in), dtype=np.float32)
     
     d_grad_out = cuda.to_device(grad_out)
@@ -233,8 +154,6 @@ def input_backward(grad_out, K, padding=0, dtype='auto', verbose=False):
     blocks_per_grid = (blocks_x, blocks_y)
     
     kernel = BACKWARD_KERNELS[(tier, dtype)]
-    
-    # Pass padding to backward kernel
     kernel[blocks_per_grid, threads_per_block](d_grad_out, d_K, padding, d_grad_A)
     
     cuda.synchronize()
@@ -252,49 +171,19 @@ def bias_backward(grad_out, dtype='auto', verbose=False, d_grad_out=None, d_grad
     ----------
     grad_out : numpy.ndarray or cuda.devicearray
         Gradient flowing back from the next layer, shape (N, C, H, W).
-        Can be on CPU (numpy array) or GPU (cuda array).
-        Supports float32 or float16 dtype.
-    
     dtype : str, optional (default='auto')
         Precision mode: 'fp32', 'fp16', or 'auto'.
-        'auto' automatically detects from grad_out dtype.
-    
     verbose : bool, optional (default=False)
         If True, prints execution details.
-    
     d_grad_out : cuda.devicearray, optional
-        Pre-allocated input on GPU (for benchmarking).
-        If provided, grad_out is ignored.
-    
+        Pre-allocated input on GPU for benchmarking.
     d_grad_bias : cuda.devicearray, optional
-        Pre-allocated output on GPU (for benchmarking).
-        If provided, result is written here instead of creating new array.
+        Pre-allocated output on GPU for benchmarking.
     
     Returns
     -------
     numpy.ndarray or cuda.devicearray
         Bias gradient of shape (C,) in float32.
-        Returns numpy array if d_grad_bias is None, otherwise returns device array.
-    
-    Examples
-    --------
-    >>> import numpy as np
-    >>> from macrotorch import Conv2d
-    >>> 
-    >>> # Standard usage (CPU input)
-    >>> grad_out = np.random.randn(8, 64, 28, 28).astype(np.float32)
-    >>> grad_bias = Conv2d.bias_backward(grad_out)
-    >>> 
-    >>> # Benchmarking mode (pre-allocated GPU arrays)
-    >>> from numba import cuda
-    >>> d_input = cuda.to_device(grad_out)
-    >>> d_output = cuda.device_array(64, dtype=np.float32)
-    >>> grad_bias = Conv2d.bias_backward(None, d_grad_out=d_input, d_grad_bias=d_output)
-    
-    Notes
-    -----
-    For accurate benchmarking, use pre-allocated GPU arrays to avoid measuring
-    data transfer time. This function expects 4D batched input (N, C, H, W).
     """
     if d_grad_out is None:
         assert grad_out is not None, "Either grad_out or d_grad_out must be provided"
@@ -303,7 +192,6 @@ def bias_backward(grad_out, dtype='auto', verbose=False, d_grad_out=None, d_grad
         else:
             d_grad_out = cuda.to_device(grad_out)
     
-    # Get shape from device array
     N, C, H, W = d_grad_out.shape
     
     if verbose:
@@ -311,20 +199,17 @@ def bias_backward(grad_out, dtype='auto', verbose=False, d_grad_out=None, d_grad
     
     return_host = False
     if d_grad_bias is None:
-        # Allocate fresh memory on GPU and initialize to zero
         d_grad_bias = cuda.device_array(C, dtype=np.float32)
-        # Initialize to zero (device memory is uninitialized)
         cuda.to_device(np.zeros(C, dtype=np.float32), to=d_grad_bias)
-        return_host = True  # Return numpy array
+        return_host = True
     else:
-        # User provided buffer - reset to zero before accumulating
         cuda.to_device(np.zeros(C, dtype=np.float32), to=d_grad_bias)
     
-    threads_per_block = (32, 8, 1)  # 256 threads
+    threads_per_block = (32, 8, 1)
     blocks_per_grid = (
-        math.ceil(W / 32),  # x covers Width
-        math.ceil(H / 8),   # y covers Height
-        C                   # z covers Channels
+        math.ceil(W / 32),
+        math.ceil(H / 8),
+        C
     )
     
     BIAS_KERNEL[blocks_per_grid, threads_per_block](d_grad_out, d_grad_bias)

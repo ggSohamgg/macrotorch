@@ -104,7 +104,6 @@ def make_conv2d_backward_shared(shared_size, dtype):
         
         sh = cuda.shared.array((shared_size, shared_size), dtype=dtype)
         
-        # Adjust base for padding
         base_i = by * BH - (Kh - 1) + padding
         base_j = bx * BW - (Kw - 1) + padding
         
@@ -153,6 +152,7 @@ def make_conv2d_backward_global(dtype):
 
     return conv2d_backward_input_global
 
+
 # =============================================================================
 # BACKWARD KERNELS (Bias Gradient)
 # =============================================================================
@@ -188,6 +188,7 @@ def conv2d_backward_bias(grad_out, grad_bias):
     if tx == 0 and ty == 0 and tz == 0 and c < C:
         cuda.atomic.add(grad_bias, c, s_block_sum[0])
 
+
 # =============================================================================
 # KERNEL REGISTRY AND TIER CONFIG
 # =============================================================================
@@ -217,5 +218,4 @@ for dtype_name in ['fp16' , 'fp32']:
     KERNELS[('xlarge' , dtype_name)] = make_conv2d_direct(dtype_type)
     BACKWARD_KERNELS[('xlarge', dtype_name)] = make_conv2d_backward_global(dtype_type)
 
-# Bias Gradient Kernel (single kernel handles both FP16/FP32 via dispatcher conversion)
 BIAS_KERNEL = conv2d_backward_bias

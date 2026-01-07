@@ -99,7 +99,7 @@ kernel_fp16 = kernel.astype(np.float16)
 output = conv2d_forward(img_fp16, kernel_fp16, padding=2)
 ```
 
-## 📖 API Reference
+## API Reference
 
 ### `conv2d_forward(A, K, padding=0, bias=None, dtype='auto', verbose=False)`
 Performs 2D convolution.
@@ -163,23 +163,23 @@ Layer class with learnable weights.
 | SciPy (CPU) | 23.03 ms | 1.00x |
 | **MacroTorch (GPU)** | **1.99 ms** | **11.60x** |
 
-📈 **[View Detailed Benchmarks](BENCHMARKS.md)** - Includes FP16 results and bias gradient benchmarks.
+**[View Detailed Benchmarks](BENCHMARKS.md)** - Includes FP16 results and bias gradient benchmarks.
 
-## 🧪 Running Tests
+## Running Tests
 
 ```bash
 pip install -e .[dev]
 pytest tests/ -v
 ```
 
-## 🏃 Running Benchmarks
+## Running Benchmarks
 
 ```bash
 pip install -e .[benchmark]
 python examples/benchmark.py
 ```
 
-## 🛠️ Key Features
+## Key Features
 - **Shared Memory Tiling:** Optimized kernels for different kernel sizes (Tiny to Large)
 - **FP32 Accumulation:** FP16 kernels use FP32 accumulators to prevent overflow
 - **Full Backward Pass:** Input gradient and bias gradient computation

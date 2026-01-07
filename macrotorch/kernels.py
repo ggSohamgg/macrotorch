@@ -52,8 +52,7 @@ def make_conv2d_kernel(shared_size , dtype):
             for u in range(Kh):
                 for v in range(Kw):
                     s += float32(sh[ty + u , tx + v]) * float32(K[u , v])  
-            if bias is not None:
-                s += float32(bias)
+            s += float32(bias)
             out[i , j] = s
     
     return conv2d_kernel
@@ -77,8 +76,7 @@ def make_conv2d_direct(dtype):
                     in_col = j - padding + v
                     if 0 <= in_row < H and 0 <= in_col < W:
                         s += float32(A[in_row , in_col]) * float32(K[u , v])
-            if bias is not None:
-                s += float32(bias)
+            s += float32(bias)
             out[i , j] = s
     
     return conv2d_direct

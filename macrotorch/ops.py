@@ -81,7 +81,8 @@ def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=Non
     blocks_per_grid = (blocks_x , blocks_y)  
     
     kernel = KERNELS[(tier , dtype)]
-    kernel[blocks_per_grid , threads_per_block](d_A , d_K , d_out, padding, bias)
+    bias_val = float(bias) if bias is not None else 0.0
+    kernel[blocks_per_grid , threads_per_block](d_A , d_K , d_out, padding, bias_val)
     
     cuda.synchronize()
     return d_out.copy_to_host()

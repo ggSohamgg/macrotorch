@@ -2,7 +2,7 @@
 
 Custom CUDA kernels for 2D convolution with PyTorch-style API. Optimized forward/backward passes with shared memory tiling. FP16/FP32 support, 5-100x CPU speedup.
 
-## � Project Structure
+## Project Structure
 
 ```
 macrotorch/
@@ -20,7 +20,7 @@ macrotorch/
     └── benchmark.py     # Benchmark script
 ```
 
-## �🚀 Quick Start
+## 🚀 Quick Start
 
 ### Installation
 

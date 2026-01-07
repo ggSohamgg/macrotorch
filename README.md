@@ -1,6 +1,6 @@
 # MacroTorch
 
-Custom CUDA kernels for 2D convolution with PyTorch-style API. Optimized forward/backward passes with shared memory tiling. FP16/FP32 support, 5-100x CPU speedup.
+Custom CUDA kernels for 2D convolution with PyTorch-style API. Built using NumPy for seamless data handling and Numba for optimized CUDA performance. Supports optimized forward/backward passes with shared memory tiling, FP16/FP32 support, and 5-100x CPU speedup.
 
 ## Project Structure
 
@@ -180,6 +180,7 @@ python examples/benchmark.py
 ```
 
 ## Key Features
+- **NumPy-Native:** Built to work directly with NumPy arrays both as input and output.
 - **Shared Memory Tiling:** Optimized kernels for different kernel sizes (Tiny to Large)
 - **FP32 Accumulation:** FP16 kernels use FP32 accumulators to prevent overflow
 - **Full Backward Pass:** Input gradient and bias gradient computation

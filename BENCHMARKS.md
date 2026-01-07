@@ -3,6 +3,7 @@
 Comprehensive performance benchmarks for MacroTorch custom CUDA kernels.
 
 All benchmarks compare MacroTorch against SciPy (CPU baseline) and PyTorch (GPU reference).
+All tests and benchmarks were performed on an **NVIDIA Tesla T4 GPU**.
 
 ---
 

@@ -165,6 +165,8 @@ Layer class with learnable weights.
 
 **[View Detailed Benchmarks](BENCHMARKS.md)** - Includes FP16 results and bias gradient benchmarks.
 
+> **Hardware Note:** All benchmarks and tests were performed on an **NVIDIA Tesla T4 GPU**.
+
 ## Running Tests
 
 ```bash

@@ -131,10 +131,47 @@ def benchmark_input_backward(dtype_name='float32', num_runs=10):
     np.random.seed(42)
     A = np.random.randn(H, W).astype(np_dtype)
     K = np.random.randn(Kh, Kw).astype(np_dtype)
+    K_flipped = K[::-1, ::-1].copy()
     
     output = conv2d_forward(A, K, padding=padding)
     grad_out = np.random.randn(*output.shape).astype(np_dtype)
     
+    # SciPy (CPU) - Ground Truth (full convolution with flipped kernel)
+    times = []
+    for _ in range(num_runs):
+        start = time.perf_counter()
+        scipy_result = correlate2d(grad_out.astype(np.float32), K_flipped.astype(np.float32), mode='full')
+        # Crop to input size
+        start_h = (scipy_result.shape[0] - H) // 2
+        start_w = (scipy_result.shape[1] - W) // 2
+        scipy_result = scipy_result[start_h:start_h+H, start_w:start_w+W]
+        times.append((time.perf_counter() - start) * 1000)
+    scipy_time = np.median(times)
+    scipy_std = np.std(times)
+    
+    # PyTorch (GPU)
+    pt_time, pt_std, pt_error = None, None, None
+    if TORCH_AVAILABLE:
+        pt_dtype = torch.float32 if dtype_name == 'float32' else torch.float16
+        t_grad = torch.from_numpy(grad_out).cuda().unsqueeze(0).unsqueeze(0).to(pt_dtype)
+        t_K = torch.from_numpy(K).cuda().unsqueeze(0).unsqueeze(0).to(pt_dtype)
+        
+        for _ in range(5):
+            _ = torch.nn.functional.conv_transpose2d(t_grad, t_K, padding=padding)
+        torch.cuda.synchronize()
+        
+        times = []
+        for _ in range(num_runs):
+            start = time.perf_counter()
+            pt_result = torch.nn.functional.conv_transpose2d(t_grad, t_K, padding=padding)
+            torch.cuda.synchronize()
+            times.append((time.perf_counter() - start) * 1000)
+        pt_time = np.median(times)
+        pt_std = np.std(times)
+        pt_out_np = pt_result.squeeze().cpu().numpy().astype(np.float32)
+        pt_error = np.abs(pt_out_np - scipy_result).max()
+    
+    # MacroTorch (GPU)
     for _ in range(5):
         _ = conv2d_input_backward(grad_out, K, padding=padding)
     
@@ -145,14 +182,21 @@ def benchmark_input_backward(dtype_name='float32', num_runs=10):
         times.append((time.perf_counter() - start) * 1000)
     mt_time = np.median(times)
     mt_std = np.std(times)
+    mt_error = np.abs(grad_input - scipy_result).max()
     
+    # Results
     print(f"\n  Results:")
-    print(f"  {'-'*50}")
-    print(f"  {'Implementation':<18} | {'Median (ms)':<12} | {'Std (ms)':<10}")
-    print(f"  {'-'*50}")
-    print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f}")
-    print(f"  {'-'*50}")
-    print(f"\n  Output gradient shape: {grad_input.shape}")
+    print(f"  {'-'*74}")
+    print(f"  {'Implementation':<18} | {'Median (ms)':<12} | {'Std (ms)':<10} | {'Speedup':<10} | {'Max Error':<12}")
+    print(f"  {'-'*74}")
+    print(f"  {'SciPy (CPU)':<18} | {scipy_time:<12.4f} | {scipy_std:<10.4f} | {'1.00x':<10} | {'Ground Truth':<12}")
+    if TORCH_AVAILABLE:
+        print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {pt_std:<10.4f} | {f'{scipy_time/pt_time:.2f}x':<10} | {f'{pt_error:.2e}':<12}")
+    print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f} | {f'{scipy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}':<12}")
+    print(f"  {'-'*74}")
+    
+    if TORCH_AVAILABLE:
+        print(f"\n  MacroTorch vs PyTorch: {pt_time/mt_time:.2f}x {'faster' if pt_time > mt_time else 'slower'}")
 
 
 def benchmark_bias_backward(dtype_name='float32', num_runs=10):

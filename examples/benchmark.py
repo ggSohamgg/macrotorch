@@ -346,17 +346,36 @@ def benchmark_weight_backward(N, H, W, Kh, Kw, padding, dtype_name='float32', us
         if use_scipy:
             pt_error = np.abs(pt_out_np - scipy_result).max()
     
-    # MacroTorch (GPU)
+    # MacroTorch (GPU) - Pre-allocate memory for fair comparison
+    if A.ndim == 2:
+        A_reshaped = A.reshape(1, *A.shape)
+        grad_out_reshaped = grad_out.reshape(1, *grad_out.shape)
+    else:
+        A_reshaped = A
+        grad_out_reshaped = grad_out
+
+    d_A = cuda.to_device(A_reshaped)
+    d_grad_out = cuda.to_device(grad_out_reshaped)
+    d_grad_W = cuda.device_array((Kh, Kw), dtype=np.float32)
+
+    # Warmup
     for _ in range(5):
-        _ = conv2d_weight_backward(grad_out, A, padding=padding)
-    
+        cuda.to_device(np.zeros((Kh, Kw), dtype=np.float32), to=d_grad_W)
+        conv2d_weight_backward(None, None, padding=padding, 
+                               d_grad_out=d_grad_out, d_A=d_A, d_grad_W=d_grad_W)
+
     times = []
     for _ in range(num_runs):
+        cuda.to_device(np.zeros((Kh, Kw), dtype=np.float32), to=d_grad_W)
         start = time.perf_counter()
-        mt_result = conv2d_weight_backward(grad_out, A, padding=padding)
+        conv2d_weight_backward(None, None, padding=padding,
+                               d_grad_out=d_grad_out, d_A=d_A, d_grad_W=d_grad_W)
+        cuda.synchronize()
         times.append((time.perf_counter() - start) * 1000)
     mt_time = np.median(times)
     mt_std = np.std(times)
+    
+    mt_result = d_grad_W.copy_to_host()
     
     # Compute error
     mt_error = None

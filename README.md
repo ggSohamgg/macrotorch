@@ -149,7 +149,7 @@ Layer class with learnable weights.
 
 - **Forward Pass:** Up to **188x faster** than SciPy (CPU)
 - **Input Backward:** **11x faster** than SciPy (CPU)
-- **Weight Backward:** **1.5-2.6x FASTER than PyTorch!**
+- **Weight Backward:** **1.1-2.8x faster than PyTorch** on tested configurations **NOT IN GENERAL ON EVERY CONFIG**
 
 **[View Detailed Benchmarks](BENCHMARKS.md)** - Full FP16/FP32 results on Tesla T4 GPU.
 

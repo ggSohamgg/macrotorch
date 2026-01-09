@@ -85,16 +85,16 @@ Performance comparison for `Conv2d.bias_backward()` on batched 4D input with **s
 
 ## Weight Gradient Backward Pass
 
-Performance comparison for `conv2d_weight_backward()` with **Parallel Tree Reduction**.
+CUDA Events profiling using `torch.cuda.Event` for precise GPU kernel timing.
 
-| Config | Precision | NumPy (CPU) | PyTorch (GPU) | MacroTorch (GPU) | MT vs PT | Max Error |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Small** (8×64×64) | FP32 | 576.95 ms | 0.27 ms | **0.11 ms** | **2.40x faster** | `1.01e-03` |
-| **Small** (8×64×64) | FP16 | 554.08 ms | 0.29 ms | **0.17 ms** | **1.72x faster** | `9.31e-04` |
-| **Large** (128×256×256) | FP32 | - | 16.05 ms | **10.12 ms** | **1.59x faster** | `1.56e-02` |
-| **Large** (128×256×256) | FP16 | - | 10.78 ms | **4.07 ms** | **2.65x faster** | `1.39e-02` |
+| Config | Precision | PyTorch (ms) | MacroTorch (ms) | Speedup | Max Error |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| **Small** (8×64×64) | FP32 | 0.29 | **0.21** | **1.42x faster** | `1.83e-04` |
+| **Small** (8×64×64) | FP16 | 0.31 | **0.27** | **1.15x faster** | `1.98e-04` |
+| **Large** (128×256×256) | FP32 | 11.54 | **10.11** | **1.14x faster** | `1.81e-02` |
+| **Large** (128×256×256) | FP16 | 11.53 | **4.10** | **2.81x faster** | `1.22e-02` |
 
-> ✅ **MacroTorch beats PyTorch on all configurations!** Up to **2.65x faster** with excellent accuracy.
+> MacroTorch is **1.1-2.8x faster than PyTorch** on these configurations (Tesla T4 GPU).
 
 ---
 
@@ -103,7 +103,7 @@ Performance comparison for `conv2d_weight_backward()` with **Parallel Tree Reduc
 MacroTorch demonstrates:
 - ✅ **10-100x speedup** over CPU (SciPy) for forward convolutions
 - ✅ **11-13x speedup** over CPU for input gradient computation
-- ✅ **5-6x speedup** over CPU for bias gradient computation (with shared memory optimization)
+- ✅ **5-6x speedup** over CPU for bias gradient computation
 - ✅ **3000-5000x speedup** over CPU for weight gradient computation
-- 🚀 **1.5-2.6x FASTER than PyTorch** for weight gradient backward pass!
+- ✅ **1.1-2.8x faster than PyTorch** for weight gradient on tested configurations
 - ✅ **Excellent accuracy** with max error ~1e-02 to 1e-03

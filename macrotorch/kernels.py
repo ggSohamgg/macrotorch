@@ -218,7 +218,7 @@ def conv2d_backward_weight_shared(input, grad_out, padding, grad_W):
 
     # summation of threads in one block(middle summation)
     if tx == 0 and ty == 0:
-      block_sum = 0.0
+      block_sum = float32(0.0)
       for yy in range(TILE_H):
         for xx in range(TILE_W):
           block_sum += s_partial[yy , xx]

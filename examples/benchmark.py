@@ -358,8 +358,13 @@ def benchmark_weight_backward(N, H, W, Kh, Kw, padding, dtype_name='float32', us
     mt_time = np.median(times)
     mt_std = np.std(times)
     
+    # Compute error
+    mt_error = None
     if use_scipy:
         mt_error = np.abs(mt_result - scipy_result).max()
+    elif TORCH_AVAILABLE and pt_out_np is not None:
+        # Compare against PyTorch when SciPy not available
+        mt_error = np.abs(mt_result - pt_out_np).max()
     
     # Results
     print(f"\n  Results:")
@@ -373,13 +378,22 @@ def benchmark_weight_backward(N, H, W, Kh, Kw, padding, dtype_name='float32', us
         print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f} | {f'{scipy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}':<12}")
         print(f"  {'-'*74}")
     else:
-        print(f"  {'-'*50}")
-        print(f"  {'Implementation':<18} | {'Median (ms)':<12} | {'Std (ms)':<10}")
-        print(f"  {'-'*50}")
-        if TORCH_AVAILABLE:
-            print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {pt_std:<10.4f}")
-        print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f}")
-        print(f"  {'-'*50}")
+        # No SciPy - show error vs PyTorch if available
+        if TORCH_AVAILABLE and mt_error is not None:
+            print(f"  {'-'*74}")
+            print(f"  {'Implementation':<18} | {'Median (ms)':<12} | {'Std (ms)':<10} | {'Error vs PT':<12}")
+            print(f"  {'-'*74}")
+            print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {pt_std:<10.4f} | {'Reference':<12}")
+            print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f} | {f'{mt_error:.2e}':<12}")
+            print(f"  {'-'*74}")
+        else:
+            print(f"  {'-'*50}")
+            print(f"  {'Implementation':<18} | {'Median (ms)':<12} | {'Std (ms)':<10}")
+            print(f"  {'-'*50}")
+            if TORCH_AVAILABLE:
+                print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {pt_std:<10.4f}")
+            print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f}")
+            print(f"  {'-'*50}")
     
     if TORCH_AVAILABLE:
         print(f"\n  MacroTorch vs PyTorch: {pt_time/mt_time:.2f}x {'faster' if pt_time > mt_time else 'slower'}")

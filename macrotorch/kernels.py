@@ -212,7 +212,7 @@ def conv2d_backward_weight_shared(input, grad_out, padding, grad_W):
         in_row = i - padding + u
         in_col = j - padding + v
         if 0 <= in_row < H_in and 0 <= in_col < W_in:
-          s += grad_out[n, i , j] * input[n , in_row , in_col]
+          s += float32(grad_out[n, i , j]) * float32(input[n , in_row , in_col])
     s_partial[ty , tx] = s
     cuda.syncthreads()
 

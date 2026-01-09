@@ -85,45 +85,16 @@ Performance comparison for `Conv2d.bias_backward()` on batched 4D input with **s
 
 ## Weight Gradient Backward Pass
 
-Performance comparison for `conv2d_weight_backward()` with **5×5 Kernel** computation.
+Performance comparison for `conv2d_weight_backward()` with **Parallel Tree Reduction**.
 
-### Small Input - FP32 Precision
+| Config | Precision | NumPy (CPU) | PyTorch (GPU) | MacroTorch (GPU) | MT vs PT | Max Error |
+| :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Small** (8×64×64) | FP32 | 576.95 ms | 0.27 ms | **0.11 ms** | **2.40x faster** | `1.01e-03` |
+| **Small** (8×64×64) | FP16 | 554.08 ms | 0.29 ms | **0.17 ms** | **1.72x faster** | `9.31e-04` |
+| **Large** (128×256×256) | FP32 | - | 16.05 ms | **10.12 ms** | **1.59x faster** | `1.56e-02` |
+| **Large** (128×256×256) | FP16 | - | 10.78 ms | **4.07 ms** | **2.65x faster** | `1.39e-02` |
 
-**Test Configuration**: Batch=8, Input=(64×64), Kernel=(5×5), Padding=2
-
-| Implementation | Time (ms) | Speedup (vs SciPy) | Max Error (vs SciPy) |
-| :---: | :---: | :---: | :---: |
-| **SciPy (CPU)** | 547.82 ms | 1.00x | Ground Truth |
-| **PyTorch (GPU)** | 0.27 ms | **2030.86x** | `1.19e-03` |
-| **MacroTorch (GPU)** | **1.13 ms** | **483.79x** | `1.02e-03` |
-
-### Small Input - FP16 Precision
-
-| Implementation | Time (ms) | Speedup (vs SciPy) | Max Error (vs SciPy) |
-| :---: | :---: | :---: | :---: |
-| **SciPy (CPU)** | 632.18 ms | 1.00x | Ground Truth |
-| **PyTorch (GPU)** | 0.21 ms | **3074.40x** | `9.76e-02` |
-| **MacroTorch (GPU)** | **1.17 ms** | **541.63x** | `3.66e-04` |
-
-### Large Input - FP32 Precision
-
-**Test Configuration**: Batch=128, Input=(256×256), Kernel=(5×5), Padding=2
-
-| Implementation | Time (ms) | Error (vs PyTorch) |
-| :---: | :---: | :---: |
-| **PyTorch (GPU)** | 19.06 ms | Reference |
-| **MacroTorch (GPU)** | **24.61 ms** | `2.10e-02` |
-
-> MacroTorch is 0.77x of PyTorch speed (23% slower) with excellent accuracy.
-
-### Large Input - FP16 Precision
-
-| Implementation | Time (ms) | Error (vs PyTorch) |
-| :---: | :---: | :---: |
-| **PyTorch (GPU)** | 15.20 ms | Reference |
-| **MacroTorch (GPU)** | **16.55 ms** | `1.51e+00` |
-
-> **MacroTorch is 0.92x of PyTorch speed (8% slower)**. FP16 error improved from 2.30→1.51 after casting fix, but still high. Large batch FP16 accumulation remains a known limitation.
+> ✅ **MacroTorch beats PyTorch on all configurations!** Up to **2.65x faster** with excellent accuracy.
 
 ---
 
@@ -133,7 +104,6 @@ MacroTorch demonstrates:
 - ✅ **10-100x speedup** over CPU (SciPy) for forward convolutions
 - ✅ **11-13x speedup** over CPU for input gradient computation
 - ✅ **5-6x speedup** over CPU for bias gradient computation (with shared memory optimization)
-- ✅ **480-540x speedup** over CPU for weight gradient computation
-- ✅ **Exact accuracy match** with PyTorch in FP32 mode
-- ✅ **Competitive FP16 performance** with expected precision trade-offs
-- ⚠️ **FP16 large-batch limitation**: Weight backward shows ~1.5 error on (128, 256, 256) inputs. Use FP32 for large batches.
+- ✅ **3000-5000x speedup** over CPU for weight gradient computation
+- 🚀 **1.5-2.6x FASTER than PyTorch** for weight gradient backward pass!
+- ✅ **Excellent accuracy** with max error ~1e-02 to 1e-03

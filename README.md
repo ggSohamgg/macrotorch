@@ -147,23 +147,11 @@ Layer class with learnable weights.
 
 ## 📊 Performance Benchmarks
 
-### Forward Pass - FP32 (512×512 Input)
+- **Forward Pass:** Up to **188x faster** than SciPy (CPU)
+- **Input Backward:** **11x faster** than SciPy (CPU)
+- **Weight Backward:** **1.5-2.6x FASTER than PyTorch!**
 
-| Kernel Size | SciPy (CPU) | MacroTorch (GPU) | Speedup |
-| :---: | :---: | :---: | :---: |
-| **3×3** | 2.96 ms | **1.54 ms** | **1.92x** |
-| **11×11** | 86.78 ms | **2.55 ms** | **34.03x** |
-| **31×31** | 536.36 ms | **5.59 ms** | **95.95x** |
-| **63×63** | 2769.66 ms | **14.66 ms** | **188.91x** |
-
-### Input Gradient Backward - FP32 (512×512, 5×5 Kernel)
-
-| Implementation | Time | Speedup |
-| :---: | :---: | :---: |
-| SciPy (CPU) | 23.03 ms | 1.00x |
-| **MacroTorch (GPU)** | **1.99 ms** | **11.60x** |
-
-**[View Detailed Benchmarks](BENCHMARKS.md)** - Includes FP16 results and bias gradient benchmarks.
+**[View Detailed Benchmarks](BENCHMARKS.md)** - Full FP16/FP32 results on Tesla T4 GPU.
 
 > **Hardware Note:** All benchmarks and tests were performed on an **NVIDIA Tesla T4 GPU**.
 

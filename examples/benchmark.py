@@ -20,6 +20,8 @@ except ImportError:
     TORCH_AVAILABLE = False
 
 from macrotorch import conv2d_forward, conv2d_input_backward, conv2d_bias_backward, conv2d_weight_backward, Conv2d
+from macrotorch.kernels import WEIGHT_KERNEL
+import math
 
 
 def scipy_conv2d(A, K, padding=0):
@@ -290,42 +292,40 @@ def benchmark_weight_backward(N, H, W, Kh, Kw, padding, dtype_name='float32', us
     print(f"    Runs:         {num_runs}")
     
     np.random.seed(42)
-    
     # Create input and grad_out
     A = np.random.randn(N, H, W).astype(np_dtype)
     H_out = H - Kh + 1 + 2 * padding
     W_out = W - Kw + 1 + 2 * padding
     grad_out = np.random.randn(N, H_out, W_out).astype(np_dtype)
     
-    # SciPy (CPU) - Ground Truth (only for small inputs)
-    scipy_time, scipy_std = None, None
+    # NumPy (CPU) - Ground Truth (single run)
+    numpy_time = None
+    numpy_result = None
     if use_scipy:
-        # Compute weight gradient using correlation
-        times = []
-        for _ in range(num_runs):
-            start = time.perf_counter()
-            scipy_result = np.zeros((Kh, Kw), dtype=np.float32)
-            for n in range(N):
-                for i in range(H_out):
-                    for j in range(W_out):
-                        in_i = i - padding
-                        in_j = j - padding
-                        for u in range(Kh):
-                            for v in range(Kw):
-                                ii = in_i + u
-                                jj = in_j + v
-                                if 0 <= ii < H and 0 <= jj < W:
-                                    scipy_result[u, v] += grad_out[n, i, j] * A[n, ii, jj]
-            times.append((time.perf_counter() - start) * 1000)
-        scipy_time = np.median(times)
-        scipy_std = np.std(times)
+        # Convert to FP32 for ground truth computation
+        input_fp32 = A.astype(np.float32)
+        grad_out_fp32 = grad_out.astype(np.float32)
+        
+        start = time.perf_counter()
+        numpy_result = np.zeros((Kh, Kw), dtype=np.float32)
+        for u in range(Kh):
+            for v in range(Kw):
+                for n in range(N):
+                    for i in range(H_out):
+                        for j in range(W_out):
+                            in_row = i - padding + u
+                            in_col = j - padding + v
+                            if 0 <= in_row < H and 0 <= in_col < W:
+                                numpy_result[u, v] += grad_out_fp32[n, i, j] * input_fp32[n, in_row, in_col]
+        numpy_time = (time.perf_counter() - start) * 1000
     
-    # PyTorch (GPU)
+    # PyTorch (GPU) - Always use FP32 for fair comparison with SciPy ground truth
     pt_time, pt_std, pt_error = None, None, None
+    pt_out_np = None
     if TORCH_AVAILABLE:
-        pt_dtype = torch.float32 if dtype_name == 'float32' else torch.float16
-        t_input = torch.from_numpy(A).cuda().unsqueeze(1).to(pt_dtype)  # (N, 1, H, W)
-        t_grad_out = torch.from_numpy(grad_out).cuda().unsqueeze(1).to(pt_dtype)  # (N, 1, H_out, W_out)
+        # Convert to FP32 for computation (matching standalone benchmark)
+        t_input = torch.tensor(A, device='cuda', dtype=torch.float32).unsqueeze(1)  # (N, 1, H, W)
+        t_grad_out = torch.tensor(grad_out, device='cuda', dtype=torch.float32).unsqueeze(1)  # (N, 1, H_out, W_out)
         
         weight_shape = (1, 1, Kh, Kw)
         
@@ -343,10 +343,10 @@ def benchmark_weight_backward(N, H, W, Kh, Kw, padding, dtype_name='float32', us
         pt_std = np.std(times)
         
         pt_out_np = pt_result.squeeze().cpu().numpy().astype(np.float32)
-        if use_scipy:
-            pt_error = np.abs(pt_out_np - scipy_result).max()
+        if use_scipy and numpy_result is not None:
+            pt_error = np.abs(pt_out_np - numpy_result).max()
     
-    # MacroTorch (GPU) - Pre-allocate memory for fair comparison
+    # MacroTorch (GPU) - Direct kernel launch for fair comparison
     if A.ndim == 2:
         A_reshaped = A.reshape(1, *A.shape)
         grad_out_reshaped = grad_out.reshape(1, *grad_out.shape)
@@ -356,20 +356,28 @@ def benchmark_weight_backward(N, H, W, Kh, Kw, padding, dtype_name='float32', us
 
     d_A = cuda.to_device(A_reshaped)
     d_grad_out = cuda.to_device(grad_out_reshaped)
-    d_grad_W = cuda.device_array((Kh, Kw), dtype=np.float32)
+    
+    # Grid configuration (same as standalone)
+    threads = (16, 16)
+    blocks = (
+        math.ceil(W_out / 16),
+        math.ceil(H_out / 16),
+        Kh * Kw
+    )
 
     # Warmup
     for _ in range(5):
-        cuda.to_device(np.zeros((Kh, Kw), dtype=np.float32), to=d_grad_W)
-        conv2d_weight_backward(None, None, padding=padding, 
-                               d_grad_out=d_grad_out, d_A=d_A, d_grad_W=d_grad_W)
+        d_grad_W = cuda.to_device(np.zeros((Kh, Kw), dtype=np.float32))
+        WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
+    cuda.synchronize()
 
+    # Benchmark - Direct kernel launch
     times = []
     for _ in range(num_runs):
-        cuda.to_device(np.zeros((Kh, Kw), dtype=np.float32), to=d_grad_W)
+        d_grad_W = cuda.to_device(np.zeros((Kh, Kw), dtype=np.float32))
+        cuda.synchronize()
         start = time.perf_counter()
-        conv2d_weight_backward(None, None, padding=padding,
-                               d_grad_out=d_grad_out, d_A=d_A, d_grad_W=d_grad_W)
+        WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
         cuda.synchronize()
         times.append((time.perf_counter() - start) * 1000)
     mt_time = np.median(times)
@@ -379,22 +387,22 @@ def benchmark_weight_backward(N, H, W, Kh, Kw, padding, dtype_name='float32', us
     
     # Compute error
     mt_error = None
-    if use_scipy:
-        mt_error = np.abs(mt_result - scipy_result).max()
+    if use_scipy and numpy_result is not None:
+        mt_error = np.abs(mt_result - numpy_result).max()
     elif TORCH_AVAILABLE and pt_out_np is not None:
-        # Compare against PyTorch when SciPy not available
+        # Compare against PyTorch when NumPy not available
         mt_error = np.abs(mt_result - pt_out_np).max()
     
     # Results
     print(f"\n  Results:")
-    if use_scipy:
+    if use_scipy and numpy_time is not None:
         print(f"  {'-'*74}")
-        print(f"  {'Implementation':<18} | {'Median (ms)':<12} | {'Std (ms)':<10} | {'Speedup':<10} | {'Max Error':<12}")
+        print(f"  {'Implementation':<18} | {'Time (ms)':<12} | {'Speedup':<10} | {'Max Error':<12}")
         print(f"  {'-'*74}")
-        print(f"  {'SciPy (CPU)':<18} | {scipy_time:<12.4f} | {scipy_std:<10.4f} | {'1.00x':<10} | {'Ground Truth':<12}")
+        print(f"  {'NumPy (CPU)':<18} | {numpy_time:<12.2f} | {'1.00x':<10} | {'Ground Truth':<12}")
         if TORCH_AVAILABLE:
-            print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {pt_std:<10.4f} | {f'{scipy_time/pt_time:.2f}x':<10} | {f'{pt_error:.2e}':<12}")
-        print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f} | {f'{scipy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}':<12}")
+            print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {f'{numpy_time/pt_time:.2f}x':<10} | {f'{pt_error:.2e}':<12}")
+        print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {f'{numpy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}':<12}")
         print(f"  {'-'*74}")
     else:
         # No SciPy - show error vs PyTorch if available

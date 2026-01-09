@@ -193,6 +193,7 @@ def conv2d_backward_weight_shared(input, grad_out, padding, grad_W):
 
     TILE_H = 16
     TILE_W = 16
+    LINEAR_TID = ty * TILE_W + tx
 
     i = by * TILE_H + ty
     j = bx * TILE_W + tx
@@ -203,28 +204,30 @@ def conv2d_backward_weight_shared(input, grad_out, padding, grad_W):
 
     N, H_out, W_out = grad_out.shape
     _, H_in, W_in = input.shape
-    s_partial = cuda.shared.array((16, 16), dtype=float32)
     
-    # summation of n(inner summation from formula)
+    s_partial = cuda.shared.array(256, dtype=float32)
     s = float32(0.0)
-    if u < Kh and v < Kw and i < H_out and j < W_out:
-      for n in range(N):
-        in_row = i - padding + u
-        in_col = j - padding + v
+    
+    if i < H_out and j < W_out:
+        in_row = i + u - padding
+        in_col = j + v - padding
+        
         if 0 <= in_row < H_in and 0 <= in_col < W_in:
-          s += float32(grad_out[n, i , j]) * float32(input[n , in_row , in_col])
-    s_partial[ty , tx] = s
+            for n in range(N):
+                s += float32(grad_out[n, i, j]) * float32(input[n, in_row, in_col])
+    
+    s_partial[LINEAR_TID] = s
     cuda.syncthreads()
-
-    # summation of threads in one block(middle summation)
-    if tx == 0 and ty == 0:
-      block_sum = float32(0.0)
-      for yy in range(TILE_H):
-        for xx in range(TILE_W):
-          block_sum += s_partial[yy , xx]
-      # sum of all blocks (outer summation)
-      if u < Kh and v < Kw:
-        cuda.atomic.add(grad_W , (u , v) , block_sum)
+    
+    stride = 128
+    while stride > 0:
+        if LINEAR_TID < stride:
+            s_partial[LINEAR_TID] += s_partial[LINEAR_TID + stride]
+        cuda.syncthreads()
+        stride //= 2
+    
+    if LINEAR_TID == 0:
+        cuda.atomic.add(grad_W, (u, v), s_partial[0])
 
 # =============================================================================
 # KERNEL REGISTRY AND TIER CONFIG

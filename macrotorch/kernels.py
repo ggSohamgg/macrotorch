@@ -186,6 +186,45 @@ def conv2d_backward_bias(grad_out, grad_bias):
     if tx == 0 and ty == 0 and tz == 0 and c < C:
         cuda.atomic.add(grad_bias, c, s_block_sum[0])
 
+@cuda.jit
+def conv2d_backward_weight_shared(input, grad_out, padding, grad_W):
+    tx, ty = cuda.threadIdx.x, cuda.threadIdx.y
+    bx, by, bz = cuda.blockIdx.x, cuda.blockIdx.y, cuda.blockIdx.z
+
+    TILE_H = 16
+    TILE_W = 16
+
+    i = by * TILE_H + ty
+    j = bx * TILE_W + tx
+
+    Kh, Kw = grad_W.shape
+    u = bz // Kw
+    v = bz % Kw
+
+    N, H_out, W_out = grad_out.shape
+    _, H_in, W_in = input.shape
+    s_partial = cuda.shared.array((16, 16), dtype=float32)
+    
+    # summation of n(inner summation from formula)
+    s = float32(0.0)
+    if u < Kh and v < Kw and i < H_out and j < W_out:
+      for n in range(N):
+        in_row = i - padding + u
+        in_col = j - padding + v
+        if 0 <= in_row < H_in and 0 <= in_col < W_in:
+          s += grad_out[n, i , j] * input[n , in_row , in_col]
+    s_partial[ty , tx] = s
+    cuda.syncthreads()
+
+    # summation of threads in one block(middle summation)
+    if tx == 0 and ty == 0:
+      block_sum = 0.0
+      for yy in range(TILE_H):
+        for xx in range(TILE_W):
+          block_sum += s_partial[yy , xx]
+      # sum of all blocks (outer summation)
+      if u < Kh and v < Kw:
+        cuda.atomic.add(grad_W , (u , v) , block_sum)
 
 # =============================================================================
 # KERNEL REGISTRY AND TIER CONFIG
@@ -217,3 +256,4 @@ for dtype_name in ['fp16' , 'fp32']:
     BACKWARD_KERNELS[('xlarge', dtype_name)] = make_conv2d_backward_global(dtype_type)
 
 BIAS_KERNEL = conv2d_backward_bias
+WEIGHT_KERNEL = conv2d_backward_weight_shared

@@ -1,7 +1,7 @@
 import numpy as np
 import math
 from numba import cuda
-from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, TIERS
+from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS
 
 
 def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=None , d_K=None , d_out=None):
@@ -159,6 +159,88 @@ def input_backward(grad_out, K, padding=0, dtype='auto', verbose=False):
     
     cuda.synchronize()
     return d_grad_A.copy_to_host()
+
+
+def weight_backward(grad_out, A, padding=0, dtype='auto', verbose=False, d_grad_out=None, d_A=None, d_grad_W=None):
+    """
+    2D Convolution Backward Pass (Weight Gradient)
+
+    Computes the gradient of the loss with respect to the weights (∂L/∂W).
+    
+    Parameters
+    ----------
+    grad_out : numpy.ndarray
+        Gradient flowing back from the next layer. Shape (H_out, W_out) or (N, H_out, W_out).
+    A : numpy.ndarray
+        Input from forward pass. Shape (H_in, W_in) or (N, H_in, W_in).
+    padding : int, optional
+        Padding used in forward pass.
+    
+    Returns
+    -------
+    numpy.ndarray
+        Gradient with respect to weights (grad_W) of shape (Kh, Kw).
+    """
+    if d_grad_out is None:
+        assert grad_out is not None
+        assert A is not None
+        
+        # Handle 2D inputs by reshaping to 3D (1, H, W)
+        if grad_out.ndim == 2:
+            grad_out_reshaped = grad_out.reshape(1, *grad_out.shape)
+        else:
+            grad_out_reshaped = grad_out
+            
+        if A.ndim == 2:
+            A_reshaped = A.reshape(1, *A.shape)
+        else:
+            A_reshaped = A
+            
+        if dtype == 'auto':
+            dtype = 'fp16' if grad_out.dtype == np.float16 else 'fp32'
+            
+        d_grad_out = cuda.to_device(grad_out_reshaped)
+        d_A = cuda.to_device(A_reshaped)
+    else:
+        # Assuming d_grad_out and d_A are already in correct 3D shape if passed manually
+        # Need to infer shapes from device arrays to Calc Kh/Kw
+        pass
+
+    N, H_out, W_out = d_grad_out.shape
+    _, H_in, W_in = d_A.shape
+    
+    Kh = H_in + 2 * padding - H_out + 1
+    Kw = W_in + 2 * padding - W_out + 1
+    
+    if verbose:
+        print(f"Weight Backward: Input {d_A.shape}, Grad {d_grad_out.shape} -> Kernel ({Kh}, {Kw})")
+
+    if d_grad_W is None:
+        grad_W = np.zeros((Kh, Kw), dtype=np.float32)
+        d_grad_W = cuda.to_device(grad_W)
+        return_host = True
+    else:
+        cuda.to_device(np.zeros((Kh, Kw), dtype=np.float32), to=d_grad_W) # zero init
+        return_host = False
+        
+    # Grid Configuration
+    TILE_H, TILE_W = 16, 16
+    
+    threads_per_block = (TILE_W, TILE_H)
+    blocks_x = math.ceil(W_out / TILE_W)
+    blocks_y = math.ceil(H_out / TILE_H)
+    blocks_z = Kh * Kw # One z-layer per kernel element
+    
+    blocks_per_grid = (blocks_x, blocks_y, blocks_z)
+    
+    WEIGHT_KERNEL[blocks_per_grid, threads_per_block](d_A, d_grad_out, padding, d_grad_W)
+    
+    cuda.synchronize()
+    
+    if return_host:
+        return d_grad_W.copy_to_host()
+    else:
+        return d_grad_W
 
 
 def bias_backward(grad_out, dtype='auto', verbose=False, d_grad_out=None, d_grad_bias=None):

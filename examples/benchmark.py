@@ -19,7 +19,7 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
-from macrotorch import conv2d_forward, conv2d_input_backward, conv2d_bias_backward, Conv2d
+from macrotorch import conv2d_forward, conv2d_input_backward, conv2d_bias_backward, conv2d_weight_backward, Conv2d
 
 
 def scipy_conv2d(A, K, padding=0):
@@ -277,6 +277,114 @@ def benchmark_bias_backward(dtype_name='float32', num_runs=10):
         print(f"\n  MacroTorch vs PyTorch: {pt_time/mt_time:.2f}x {'faster' if pt_time > mt_time else 'slower'}")
 
 
+def benchmark_weight_backward(N, H, W, Kh, Kw, padding, dtype_name='float32', use_scipy=True, num_runs=10):
+    """Benchmark weight gradient computation."""
+    np_dtype = np.float32 if dtype_name == 'float32' else np.float16
+    
+    print(f"\n  Configuration:")
+    print(f"    Batch:        {N}")
+    print(f"    Input:        {H} x {W}")
+    print(f"    Kernel Size:  {Kh} x {Kw}")
+    print(f"    Padding:      {padding}")
+    print(f"    Precision:    {dtype_name.upper()}")
+    print(f"    Runs:         {num_runs}")
+    
+    np.random.seed(42)
+    
+    # Create input and grad_out
+    A = np.random.randn(N, H, W).astype(np_dtype)
+    H_out = H - Kh + 1 + 2 * padding
+    W_out = W - Kw + 1 + 2 * padding
+    grad_out = np.random.randn(N, H_out, W_out).astype(np_dtype)
+    
+    # SciPy (CPU) - Ground Truth (only for small inputs)
+    scipy_time, scipy_std = None, None
+    if use_scipy:
+        # Compute weight gradient using correlation
+        times = []
+        for _ in range(num_runs):
+            start = time.perf_counter()
+            scipy_result = np.zeros((Kh, Kw), dtype=np.float32)
+            for n in range(N):
+                for i in range(H_out):
+                    for j in range(W_out):
+                        in_i = i - padding
+                        in_j = j - padding
+                        for u in range(Kh):
+                            for v in range(Kw):
+                                ii = in_i + u
+                                jj = in_j + v
+                                if 0 <= ii < H and 0 <= jj < W:
+                                    scipy_result[u, v] += grad_out[n, i, j] * A[n, ii, jj]
+            times.append((time.perf_counter() - start) * 1000)
+        scipy_time = np.median(times)
+        scipy_std = np.std(times)
+    
+    # PyTorch (GPU)
+    pt_time, pt_std, pt_error = None, None, None
+    if TORCH_AVAILABLE:
+        pt_dtype = torch.float32 if dtype_name == 'float32' else torch.float16
+        t_input = torch.from_numpy(A).cuda().unsqueeze(1).to(pt_dtype)  # (N, 1, H, W)
+        t_grad_out = torch.from_numpy(grad_out).cuda().unsqueeze(1).to(pt_dtype)  # (N, 1, H_out, W_out)
+        
+        weight_shape = (1, 1, Kh, Kw)
+        
+        for _ in range(5):
+            _ = torch.nn.grad.conv2d_weight(t_input, weight_shape, t_grad_out, padding=padding)
+        torch.cuda.synchronize()
+        
+        times = []
+        for _ in range(num_runs):
+            start = time.perf_counter()
+            pt_result = torch.nn.grad.conv2d_weight(t_input, weight_shape, t_grad_out, padding=padding)
+            torch.cuda.synchronize()
+            times.append((time.perf_counter() - start) * 1000)
+        pt_time = np.median(times)
+        pt_std = np.std(times)
+        
+        pt_out_np = pt_result.squeeze().cpu().numpy().astype(np.float32)
+        if use_scipy:
+            pt_error = np.abs(pt_out_np - scipy_result).max()
+    
+    # MacroTorch (GPU)
+    for _ in range(5):
+        _ = conv2d_weight_backward(grad_out, A, padding=padding)
+    
+    times = []
+    for _ in range(num_runs):
+        start = time.perf_counter()
+        mt_result = conv2d_weight_backward(grad_out, A, padding=padding)
+        times.append((time.perf_counter() - start) * 1000)
+    mt_time = np.median(times)
+    mt_std = np.std(times)
+    
+    if use_scipy:
+        mt_error = np.abs(mt_result - scipy_result).max()
+    
+    # Results
+    print(f"\n  Results:")
+    if use_scipy:
+        print(f"  {'-'*74}")
+        print(f"  {'Implementation':<18} | {'Median (ms)':<12} | {'Std (ms)':<10} | {'Speedup':<10} | {'Max Error':<12}")
+        print(f"  {'-'*74}")
+        print(f"  {'SciPy (CPU)':<18} | {scipy_time:<12.4f} | {scipy_std:<10.4f} | {'1.00x':<10} | {'Ground Truth':<12}")
+        if TORCH_AVAILABLE:
+            print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {pt_std:<10.4f} | {f'{scipy_time/pt_time:.2f}x':<10} | {f'{pt_error:.2e}':<12}")
+        print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f} | {f'{scipy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}':<12}")
+        print(f"  {'-'*74}")
+    else:
+        print(f"  {'-'*50}")
+        print(f"  {'Implementation':<18} | {'Median (ms)':<12} | {'Std (ms)':<10}")
+        print(f"  {'-'*50}")
+        if TORCH_AVAILABLE:
+            print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {pt_std:<10.4f}")
+        print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f}")
+        print(f"  {'-'*50}")
+    
+    if TORCH_AVAILABLE:
+        print(f"\n  MacroTorch vs PyTorch: {pt_time/mt_time:.2f}x {'faster' if pt_time > mt_time else 'slower'}")
+
+
 def main():
     print("\n" + "="*80)
     print(" MacroTorch Benchmark Suite")
@@ -308,6 +416,20 @@ def main():
     
     print_header("BIAS BACKWARD - FP16")
     benchmark_bias_backward(dtype_name='float16')
+    
+    # Weight Backward - Small (with SciPy validation)
+    print_header("WEIGHT BACKWARD (SMALL) - FP32")
+    benchmark_weight_backward(N=8, H=64, W=64, Kh=5, Kw=5, padding=2, dtype_name='float32', use_scipy=True)
+    
+    print_header("WEIGHT BACKWARD (SMALL) - FP16")
+    benchmark_weight_backward(N=8, H=64, W=64, Kh=5, Kw=5, padding=2, dtype_name='float16', use_scipy=True)
+    
+    # Weight Backward - Large (no SciPy, too slow)
+    print_header("WEIGHT BACKWARD (LARGE) - FP32")
+    benchmark_weight_backward(N=128, H=256, W=256, Kh=5, Kw=5, padding=2, dtype_name='float32', use_scipy=False)
+    
+    print_header("WEIGHT BACKWARD (LARGE) - FP16")
+    benchmark_weight_backward(N=128, H=256, W=256, Kh=5, Kw=5, padding=2, dtype_name='float16', use_scipy=False)
     
     print("\n" + "="*80)
     print(" BENCHMARK COMPLETE")

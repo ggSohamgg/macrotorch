@@ -147,11 +147,14 @@ Layer class with learnable weights.
 
 ## 📊 Performance Benchmarks
 
-- **Forward Pass:** Up to **188x faster** than SciPy (CPU)
-- **Input Backward:** **11x faster** than SciPy (CPU)
-- **Weight Backward:** **1.1-2.8x faster than PyTorch** on tested configurations **NOT IN GENERAL ON EVERY CONFIG**
+Using `torch.cuda.Event` for precise GPU timing (Tesla T4):
 
-**[View Detailed Benchmarks](BENCHMARKS.md)** - Full FP16/FP32 results on Tesla T4 GPU.
+- **Forward Pass:** **10-12x faster** than CPU (SciPy)
+- **Input Backward:** **19-23x faster** than CPU
+- **Bias Backward:** **31-68x faster** than CPU
+- **Weight Backward:** **1.2-2.8x faster than PyTorch** on tested configs
+
+**[View Detailed Benchmarks](BENCHMARKS.md)** - Full FP16/FP32 results.
 
 > **Hardware Note:** All benchmarks and tests were performed on an **NVIDIA Tesla T4 GPU**.
 

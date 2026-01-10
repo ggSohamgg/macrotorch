@@ -155,6 +155,71 @@ class TestConv2dBackwardGPU:
         expected = np.sum(grad_out, axis=(0, 2, 3))
         
         np.testing.assert_allclose(grad_bias, expected, rtol=1e-3, atol=1e-3)
+    
+    def test_weight_backward_shape(self):
+        """Test weight gradient has correct shape."""
+        from macrotorch import conv2d_weight_backward
+        
+        np.random.seed(42)
+        N, H, W = 8, 32, 32
+        Kh, Kw = 5, 5
+        padding = 2
+        H_out = H - Kh + 1 + 2 * padding
+        W_out = W - Kw + 1 + 2 * padding
+        
+        A = np.random.randn(N, H, W).astype(np.float32)
+        grad_out = np.random.randn(N, H_out, W_out).astype(np.float32)
+        
+        grad_W = conv2d_weight_backward(grad_out, A, padding=padding)
+        
+        assert grad_W.shape == (Kh, Kw)
+    
+    def test_weight_backward_value(self):
+        """Test weight gradient matches NumPy ground truth."""
+        from macrotorch import conv2d_weight_backward
+        
+        np.random.seed(42)
+        N, H, W = 4, 16, 16
+        Kh, Kw = 3, 3
+        padding = 1
+        H_out = H - Kh + 1 + 2 * padding
+        W_out = W - Kw + 1 + 2 * padding
+        
+        A = np.random.randn(N, H, W).astype(np.float32)
+        grad_out = np.random.randn(N, H_out, W_out).astype(np.float32)
+        
+        # MacroTorch result
+        grad_W = conv2d_weight_backward(grad_out, A, padding=padding)
+        
+        # NumPy ground truth
+        expected = np.zeros((Kh, Kw), dtype=np.float32)
+        for u in range(Kh):
+            for v in range(Kw):
+                for n in range(N):
+                    for i in range(H_out):
+                        for j in range(W_out):
+                            in_row = i - padding + u
+                            in_col = j - padding + v
+                            if 0 <= in_row < H and 0 <= in_col < W:
+                                expected[u, v] += grad_out[n, i, j] * A[n, in_row, in_col]
+        
+        np.testing.assert_allclose(grad_W, expected, rtol=1e-3, atol=1e-3)
+    
+    def test_weight_backward_2d_input(self):
+        """Test weight backward with 2D input (auto-reshape to 3D)."""
+        from macrotorch import conv2d_weight_backward
+        
+        np.random.seed(42)
+        H, W = 16, 16
+        Kh, Kw = 3, 3
+        padding = 1
+        
+        A = np.random.randn(H, W).astype(np.float32)
+        grad_out = np.random.randn(H, W).astype(np.float32)
+        
+        grad_W = conv2d_weight_backward(grad_out, A, padding=padding)
+        
+        assert grad_W.shape == (Kh, Kw)
 
 
 @pytest.mark.gpu

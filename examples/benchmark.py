@@ -77,12 +77,16 @@ def benchmark_forward(dtype_name='float32', num_runs=10):
             _ = torch.nn.functional.conv2d(t_A, t_K, padding=padding)
         torch.cuda.synchronize()
         
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
         times = []
         for _ in range(num_runs):
-            start = time.perf_counter()
+            start_event.record()
             pt_out = torch.nn.functional.conv2d(t_A, t_K, padding=padding)
+            end_event.record()
             torch.cuda.synchronize()
-            times.append((time.perf_counter() - start) * 1000)
+            times.append(start_event.elapsed_time(end_event))
         pt_time = np.median(times)
         pt_std = np.std(times)
         pt_error = np.abs(pt_out.squeeze().cpu().numpy().astype(np.float32) - scipy_out).max()
@@ -91,11 +95,23 @@ def benchmark_forward(dtype_name='float32', num_runs=10):
     for _ in range(5):
         _ = conv2d_forward(A, K, padding=padding)
     
-    times = []
-    for _ in range(num_runs):
-        start = time.perf_counter()
-        mt_out = conv2d_forward(A, K, padding=padding)
-        times.append((time.perf_counter() - start) * 1000)
+    if TORCH_AVAILABLE:
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        times = []
+        for _ in range(num_runs):
+            start_event.record()
+            mt_out = conv2d_forward(A, K, padding=padding)
+            end_event.record()
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))
+    else:
+        times = []
+        for _ in range(num_runs):
+            start = time.perf_counter()
+            mt_out = conv2d_forward(A, K, padding=padding)
+            times.append((time.perf_counter() - start) * 1000)
     mt_time = np.median(times)
     mt_std = np.std(times)
     mt_error = np.abs(mt_out - scipy_out).max()
@@ -162,12 +178,16 @@ def benchmark_input_backward(dtype_name='float32', num_runs=10):
             _ = torch.nn.functional.conv_transpose2d(t_grad, t_K, padding=padding)
         torch.cuda.synchronize()
         
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
         times = []
         for _ in range(num_runs):
-            start = time.perf_counter()
+            start_event.record()
             pt_result = torch.nn.functional.conv_transpose2d(t_grad, t_K, padding=padding)
+            end_event.record()
             torch.cuda.synchronize()
-            times.append((time.perf_counter() - start) * 1000)
+            times.append(start_event.elapsed_time(end_event))
         pt_time = np.median(times)
         pt_std = np.std(times)
         pt_out_np = pt_result.squeeze().cpu().numpy().astype(np.float32)
@@ -177,11 +197,23 @@ def benchmark_input_backward(dtype_name='float32', num_runs=10):
     for _ in range(5):
         _ = conv2d_input_backward(grad_out, K, padding=padding)
     
-    times = []
-    for _ in range(num_runs):
-        start = time.perf_counter()
-        grad_input = conv2d_input_backward(grad_out, K, padding=padding)
-        times.append((time.perf_counter() - start) * 1000)
+    if TORCH_AVAILABLE:
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        times = []
+        for _ in range(num_runs):
+            start_event.record()
+            grad_input = conv2d_input_backward(grad_out, K, padding=padding)
+            end_event.record()
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))
+    else:
+        times = []
+        for _ in range(num_runs):
+            start = time.perf_counter()
+            grad_input = conv2d_input_backward(grad_out, K, padding=padding)
+            times.append((time.perf_counter() - start) * 1000)
     mt_time = np.median(times)
     mt_std = np.std(times)
     mt_error = np.abs(grad_input - scipy_result).max()
@@ -236,12 +268,16 @@ def benchmark_bias_backward(dtype_name='float32', num_runs=10):
             _ = t_grad.sum(dim=(0, 2, 3))
         torch.cuda.synchronize()
         
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
         times = []
         for _ in range(num_runs):
-            start = time.perf_counter()
+            start_event.record()
             pt_result = t_grad.sum(dim=(0, 2, 3))
+            end_event.record()
             torch.cuda.synchronize()
-            times.append((time.perf_counter() - start) * 1000)
+            times.append(start_event.elapsed_time(end_event))
         pt_time = np.median(times)
         pt_std = np.std(times)
         pt_error = np.abs(pt_result.cpu().numpy().astype(np.float32) - numpy_result).max()
@@ -253,12 +289,24 @@ def benchmark_bias_backward(dtype_name='float32', num_runs=10):
     for _ in range(5):
         _ = conv2d_bias_backward(None, d_grad_out=d_input, d_grad_bias=d_output)
     
-    times = []
-    for _ in range(num_runs):
-        start = time.perf_counter()
-        conv2d_bias_backward(None, d_grad_out=d_input, d_grad_bias=d_output)
-        cuda.synchronize()
-        times.append((time.perf_counter() - start) * 1000)
+    if TORCH_AVAILABLE:
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        times = []
+        for _ in range(num_runs):
+            start_event.record()
+            conv2d_bias_backward(None, d_grad_out=d_input, d_grad_bias=d_output)
+            end_event.record()
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))
+    else:
+        times = []
+        for _ in range(num_runs):
+            start = time.perf_counter()
+            conv2d_bias_backward(None, d_grad_out=d_input, d_grad_bias=d_output)
+            cuda.synchronize()
+            times.append((time.perf_counter() - start) * 1000)
     mt_time = np.median(times)
     mt_std = np.std(times)
     mt_result = d_output.copy_to_host()
@@ -333,12 +381,16 @@ def benchmark_weight_backward(N, H, W, Kh, Kw, padding, dtype_name='float32', us
             _ = torch.nn.grad.conv2d_weight(t_input, weight_shape, t_grad_out, padding=padding)
         torch.cuda.synchronize()
         
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
         times = []
         for _ in range(num_runs):
-            start = time.perf_counter()
+            start_event.record()
             pt_result = torch.nn.grad.conv2d_weight(t_input, weight_shape, t_grad_out, padding=padding)
+            end_event.record()
             torch.cuda.synchronize()
-            times.append((time.perf_counter() - start) * 1000)
+            times.append(start_event.elapsed_time(end_event))
         pt_time = np.median(times)
         pt_std = np.std(times)
         
@@ -371,15 +423,29 @@ def benchmark_weight_backward(N, H, W, Kh, Kw, padding, dtype_name='float32', us
         WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
     cuda.synchronize()
 
-    # Benchmark - Direct kernel launch
-    times = []
-    for _ in range(num_runs):
-        d_grad_W = cuda.to_device(np.zeros((Kh, Kw), dtype=np.float32))
-        cuda.synchronize()
-        start = time.perf_counter()
-        WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
-        cuda.synchronize()
-        times.append((time.perf_counter() - start) * 1000)
+    # Benchmark - Direct kernel launch with CUDA Events
+    if TORCH_AVAILABLE:
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        times = []
+        for _ in range(num_runs):
+            d_grad_W = cuda.to_device(np.zeros((Kh, Kw), dtype=np.float32))
+            cuda.synchronize()
+            start_event.record()
+            WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
+            end_event.record()
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))
+    else:
+        times = []
+        for _ in range(num_runs):
+            d_grad_W = cuda.to_device(np.zeros((Kh, Kw), dtype=np.float32))
+            cuda.synchronize()
+            start = time.perf_counter()
+            WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
+            cuda.synchronize()
+            times.append((time.perf_counter() - start) * 1000)
     mt_time = np.median(times)
     mt_std = np.std(times)
     

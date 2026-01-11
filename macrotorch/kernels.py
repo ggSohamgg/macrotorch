@@ -229,6 +229,19 @@ def conv2d_backward_weight_shared(input, grad_out, padding, grad_W):
     if LINEAR_TID == 0:
         cuda.atomic.add(grad_W, (u, v), s_partial[0])
 
+@cuda.jit
+def relu_forward(x, out):
+    i = cuda.grid(1)
+    if i < x.size:
+        out.flat[i] = max(x.flat[i], 0.0)
+
+
+@cuda.jit
+def relu_backward(x, grad_out, grad_in):
+    i = cuda.grid(1)
+    if i < x.size:
+        grad_in.flat[i] = grad_out.flat[i] if x.flat[i] > 0 else 0.0
+
 # =============================================================================
 # KERNEL REGISTRY AND TIER CONFIG
 # =============================================================================
@@ -260,3 +273,5 @@ for dtype_name in ['fp16' , 'fp32']:
 
 BIAS_KERNEL = conv2d_backward_bias
 WEIGHT_KERNEL = conv2d_backward_weight_shared
+RELU_FORWARD = relu_forward
+RELU_BACKWARD = relu_backward

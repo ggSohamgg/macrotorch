@@ -263,5 +263,76 @@ class TestConv2dLayer:
         assert grad_input.shape == x.shape
 
 
+@pytest.mark.gpu
+class TestReLU:
+    """Tests for ReLU activation function."""
+    
+    def test_relu_forward_positive(self):
+        """Test ReLU forward with positive values."""
+        from macrotorch import relu
+        
+        x = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        out = relu(x)
+        expected = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        
+        np.testing.assert_allclose(out, expected, rtol=1e-5)
+    
+    def test_relu_forward_negative(self):
+        """Test ReLU forward with negative values."""
+        from macrotorch import relu
+        
+        x = np.array([-1.0, -2.0, -3.0], dtype=np.float32)
+        out = relu(x)
+        expected = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+        
+        np.testing.assert_allclose(out, expected, rtol=1e-5)
+    
+    def test_relu_forward_mixed(self):
+        """Test ReLU forward with mixed values."""
+        from macrotorch import relu
+        
+        x = np.array([-2.0, -1.0, 0.0, 1.0, 2.0], dtype=np.float32)
+        out = relu(x)
+        expected = np.array([0.0, 0.0, 0.0, 1.0, 2.0], dtype=np.float32)
+        
+        np.testing.assert_allclose(out, expected, rtol=1e-5)
+    
+    def test_relu_forward_2d(self):
+        """Test ReLU forward with 2D array."""
+        from macrotorch import relu
+        
+        np.random.seed(42)
+        x = np.random.randn(64, 64).astype(np.float32)
+        out = relu(x)
+        expected = np.maximum(0, x)
+        
+        np.testing.assert_allclose(out, expected, rtol=1e-5)
+    
+    def test_relu_backward_value(self):
+        """Test ReLU backward gradient computation."""
+        from macrotorch import relu_backward
+        
+        x = np.array([-2.0, -1.0, 0.0, 1.0, 2.0], dtype=np.float32)
+        grad_out = np.array([1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32)
+        
+        grad_in = relu_backward(x, grad_out)
+        expected = np.array([0.0, 0.0, 0.0, 1.0, 1.0], dtype=np.float32)
+        
+        np.testing.assert_allclose(grad_in, expected, rtol=1e-5)
+    
+    def test_relu_backward_2d(self):
+        """Test ReLU backward with 2D array."""
+        from macrotorch import relu_backward
+        
+        np.random.seed(42)
+        x = np.random.randn(32, 32).astype(np.float32)
+        grad_out = np.ones_like(x)
+        
+        grad_in = relu_backward(x, grad_out)
+        expected = (x > 0).astype(np.float32)
+        
+        np.testing.assert_allclose(grad_in, expected, rtol=1e-5)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

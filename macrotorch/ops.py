@@ -1,7 +1,7 @@
 import numpy as np
 import math
 from numba import cuda
-from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS
+from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD
 
 
 def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=None , d_K=None , d_out=None):
@@ -302,3 +302,94 @@ def bias_backward(grad_out, dtype='auto', verbose=False, d_grad_out=None, d_grad
         return d_grad_bias.copy_to_host()
     else:
         return d_grad_bias
+
+
+def relu(x, d_x=None, d_out=None):
+    """
+    ReLU Forward Pass
+    
+    Computes element-wise max(0, x) using CUDA.
+    
+    Parameters
+    ----------
+    x : numpy.ndarray
+        Input array of any shape
+    d_x : numba.cuda.DeviceNDArray, optional
+        Pre-allocated device input array
+    d_out : numba.cuda.DeviceNDArray, optional
+        Pre-allocated device output array
+        
+    Returns
+    -------
+    numpy.ndarray or numba.cuda.DeviceNDArray
+        ReLU output with same shape as input
+    """
+    if d_x is None:
+        d_x = cuda.to_device(x)
+        return_host = True
+    else:
+        return_host = False
+    
+    if d_out is None:
+        d_out = cuda.device_array(d_x.shape, dtype=d_x.dtype)
+    
+    # 1D grid for element-wise operation
+    threads_per_block = 256
+    blocks_per_grid = math.ceil(d_x.size / threads_per_block)
+    
+    RELU_FORWARD[blocks_per_grid, threads_per_block](d_x, d_out)
+    cuda.synchronize()
+    
+    if return_host:
+        return d_out.copy_to_host()
+    else:
+        return d_out
+
+
+def relu_backward(x, grad_out, d_x=None, d_grad_out=None, d_grad_in=None):
+    """
+    ReLU Backward Pass
+    
+    Computes gradient through ReLU: grad_in = grad_out * (x > 0)
+    
+    Parameters
+    ----------
+    x : numpy.ndarray
+        Original input to ReLU (before ReLU was applied)
+    grad_out : numpy.ndarray
+        Gradient from downstream layer
+    d_x : numba.cuda.DeviceNDArray, optional
+        Pre-allocated device input array
+    d_grad_out : numba.cuda.DeviceNDArray, optional
+        Pre-allocated device gradient output array
+    d_grad_in : numba.cuda.DeviceNDArray, optional
+        Pre-allocated device gradient input array
+        
+    Returns
+    -------
+    numpy.ndarray or numba.cuda.DeviceNDArray
+        Gradient with respect to input
+    """
+    if d_x is None:
+        d_x = cuda.to_device(x)
+        return_host = True
+    else:
+        return_host = False
+    
+    if d_grad_out is None:
+        d_grad_out = cuda.to_device(grad_out)
+    
+    if d_grad_in is None:
+        d_grad_in = cuda.device_array(d_x.shape, dtype=np.float32)
+    
+    # 1D grid for element-wise operation
+    threads_per_block = 256
+    blocks_per_grid = math.ceil(d_x.size / threads_per_block)
+    
+    RELU_BACKWARD[blocks_per_grid, threads_per_block](d_x, d_grad_out, d_grad_in)
+    cuda.synchronize()
+    
+    if return_host:
+        return d_grad_in.copy_to_host()
+    else:
+        return d_grad_in

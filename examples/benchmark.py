@@ -19,8 +19,8 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
-from macrotorch import conv2d_forward, conv2d_input_backward, conv2d_bias_backward, conv2d_weight_backward, Conv2d
-from macrotorch.kernels import WEIGHT_KERNEL
+from macrotorch import conv2d_forward, conv2d_input_backward, conv2d_bias_backward, conv2d_weight_backward, Conv2d, relu
+from macrotorch.kernels import WEIGHT_KERNEL, RELU_FORWARD
 import math
 
 
@@ -538,9 +538,108 @@ def main():
     print_header("WEIGHT BACKWARD (LARGE) - FP16")
     benchmark_weight_backward(N=128, H=256, W=256, Kh=5, Kw=5, padding=2, dtype_name='float16', use_scipy=False)
     
+    # ReLU Benchmarks
+    print_header("RELU - FP32")
+    benchmark_relu(size=(1024, 1024), dtype_name='float32')
+    
     print("\n" + "="*80)
     print(" BENCHMARK COMPLETE")
     print("="*80 + "\n")
+
+
+def benchmark_relu(size=(1024, 1024), dtype_name='float32', num_runs=10):
+    """Benchmark ReLU activation."""
+    np_dtype = np.float32 if dtype_name == 'float32' else np.float16
+    
+    print(f"\n  Configuration:")
+    print(f"    Size:         {size[0]} x {size[1]}")
+    print(f"    Precision:    {dtype_name.upper()}")
+    print(f"    Runs:         {num_runs}")
+    
+    np.random.seed(42)
+    x = np.random.randn(*size).astype(np_dtype)
+    
+    # NumPy (CPU) - Ground Truth
+    times = []
+    for _ in range(num_runs):
+        start = time.perf_counter()
+        numpy_result = np.maximum(0, x)
+        times.append((time.perf_counter() - start) * 1000)
+    numpy_time = np.median(times)
+    
+    # PyTorch (GPU)
+    pt_time = None
+    if TORCH_AVAILABLE:
+        pt_dtype = torch.float32 if dtype_name == 'float32' else torch.float16
+        t_x = torch.from_numpy(x).cuda().to(pt_dtype)
+        
+        for _ in range(5):
+            _ = torch.relu(t_x)
+        torch.cuda.synchronize()
+        
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        times = []
+        for _ in range(num_runs):
+            start_event.record()
+            pt_result = torch.relu(t_x)
+            end_event.record()
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))
+        pt_time = np.median(times)
+    
+    # MacroTorch (GPU)
+    d_x = cuda.to_device(x)
+    d_out = cuda.device_array(x.shape, dtype=x.dtype)
+    
+    threads = 256
+    blocks = math.ceil(x.size / threads)
+    
+    for _ in range(5):
+        RELU_FORWARD[blocks, threads](d_x, d_out)
+    cuda.synchronize()
+    
+    if TORCH_AVAILABLE:
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        times = []
+        for _ in range(num_runs):
+            start_event.record()
+            RELU_FORWARD[blocks, threads](d_x, d_out)
+            end_event.record()
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))
+    else:
+        times = []
+        for _ in range(num_runs):
+            start = time.perf_counter()
+            RELU_FORWARD[blocks, threads](d_x, d_out)
+            cuda.synchronize()
+            times.append((time.perf_counter() - start) * 1000)
+    mt_time = np.median(times)
+    
+    mt_result = d_out.copy_to_host()
+    mt_error = np.abs(mt_result - numpy_result).max()
+    
+    # Results
+    print(f"\n  Results:")
+    print(f"  {'-'*60}")
+    print(f"  {'Implementation':<18} | {'Time (ms)':<12} | {'Speedup':<10} | {'Error':<12}")
+    print(f"  {'-'*60}")
+    print(f"  {'NumPy (CPU)':<18} | {numpy_time:<12.4f} | {'1.00x':<10} | {'Ground Truth':<12}")
+    if TORCH_AVAILABLE:
+        print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {f'{numpy_time/pt_time:.2f}x':<10} | {'~0':<12}")
+    print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {f'{numpy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}':<12}")
+    print(f"  {'-'*60}")
+    
+    if TORCH_AVAILABLE:
+        speedup = pt_time / mt_time
+        if speedup > 1:
+            print(f"\n  MacroTorch vs PyTorch: {speedup:.2f}x faster")
+        else:
+            print(f"\n  MacroTorch vs PyTorch: {1/speedup:.2f}x slower")
 
 
 if __name__ == "__main__":

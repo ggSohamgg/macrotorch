@@ -61,14 +61,28 @@ All tests and benchmarks were performed on an **NVIDIA Tesla T4 GPU**.
 
 ---
 
+## ReLU Activation
+
+**Configuration**: 1024×1024 array, FP32
+
+| Pass | NumPy (CPU) | PyTorch (GPU) | MacroTorch (GPU) | MT vs PT | Error |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| **Forward** | 2.40 ms | 0.05 ms | 0.15 ms | 2.70x slower | `0.00e+00` |
+| **Backward** | 1.83 ms | 0.21 ms | **0.13 ms** | **1.70x faster** | `0.00e+00` |
+
+> MacroTorch ReLU backward is **1.7x faster than PyTorch**, while forward is optimized for simplicity. Both achieve exact accuracy.
+
+---
+
 ## Summary
 
 MacroTorch demonstrates:
 - ✅ **10-23x speedup** over CPU for forward/backward passes
 - ✅ **31-68x speedup** over CPU for bias gradient computation
 - ✅ **1.2-2.8x faster than PyTorch** for weight gradient backward
+- ✅ **1.7x faster than PyTorch** for ReLU backward
 - ✅ **Excellent accuracy** with max error ~1e-02 to 1e-04
 - ✅ **Better FP16 precision** than PyTorch in some operations
 
 ### Note on PyTorch Comparison
-PyTorch uses highly optimized cuDNN for forward and input backward passes, which is ~20-30x faster than MacroTorch for those operations. However, MacroTorch's custom tree-reduction kernel **beats PyTorch** for weight gradient computation.
+PyTorch uses highly optimized cuDNN for forward and input backward passes, which is ~20-30x faster than MacroTorch for those operations. However, MacroTorch's custom kernels **beat PyTorch** for weight gradient computation and ReLU backward.

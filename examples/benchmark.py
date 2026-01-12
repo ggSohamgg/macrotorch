@@ -451,7 +451,7 @@ def benchmark_weight_backward(N, C, Cout, H, W, Kh, Kw, padding, dtype_name='flo
     blocks = (
         math.ceil(W_out / 16),
         math.ceil(H_out / 16),
-        Cout * C
+        Cout * C * Kh * Kw
     )
 
     # Warmup

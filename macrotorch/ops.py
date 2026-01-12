@@ -165,7 +165,7 @@ def weight_backward(grad_out, A, padding=0, dtype='auto', verbose=False, d_grad_
     threads_per_block = (TILE_W, TILE_H)
     blocks_x = math.ceil(W_out / TILE_W)
     blocks_y = math.ceil(H_out / TILE_H)
-    blocks_z = Cout * Cin
+    blocks_z = Cout * Cin * Kh * Kw
     blocks_per_grid = (blocks_x, blocks_y, blocks_z)
     
     WEIGHT_KERNEL[blocks_per_grid, threads_per_block](d_A, d_grad_out, padding, d_grad_W)

@@ -447,11 +447,11 @@ def benchmark_weight_backward(N, C, Cout, H, W, Kh, Kw, padding, dtype_name='flo
     d_grad_out = cuda.to_device(grad_out)
     
     # Grid configuration
-    threads = (16, 16)
+    threads = (32, 32)
     blocks = (
-        math.ceil(W_out / 16),
-        math.ceil(H_out / 16),
-        Cout * C * Kh * Kw
+        math.ceil(W_out / 32),
+        math.ceil(H_out / 32),
+        Cout * C
     )
 
     # Warmup
@@ -459,8 +459,13 @@ def benchmark_weight_backward(N, C, Cout, H, W, Kh, Kw, padding, dtype_name='flo
     d_grad_W = cuda.to_device(zeros_host)
     
     for _ in range(5):
-        d_grad_W.copy_to_device(zeros_host)
+        # Warmup (zeroing is fine here)
+        d_grad_W.copy_to_device(zeros_host) 
         WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
+    cuda.synchronize()
+
+    # Zero ONCE before timing loop
+    d_grad_W.copy_to_device(zeros_host)
     cuda.synchronize()
 
     if TORCH_AVAILABLE:
@@ -469,8 +474,7 @@ def benchmark_weight_backward(N, C, Cout, H, W, Kh, Kw, padding, dtype_name='flo
         
         times = []
         for _ in range(num_runs):
-            d_grad_W.copy_to_device(zeros_host)
-            cuda.synchronize() # Ensure zeroing is complete before start (though copy is sync usually on same stream)
+            # NO ZEROING inside timing loop -> pure atomic throughput measurement
             start_event.record()
             WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
             end_event.record()
@@ -479,8 +483,7 @@ def benchmark_weight_backward(N, C, Cout, H, W, Kh, Kw, padding, dtype_name='flo
     else:
         times = []
         for _ in range(num_runs):
-            d_grad_W.copy_to_device(zeros_host)
-            cuda.synchronize()
+            # NO ZEROING inside timing loop
             start = time.perf_counter()
             WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
             cuda.synchronize()

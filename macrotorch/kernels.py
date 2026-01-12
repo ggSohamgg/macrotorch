@@ -222,50 +222,50 @@ def conv2d_backward_weight_shared(input, grad_out, padding, grad_W):
     tx, ty = cuda.threadIdx.x, cuda.threadIdx.y
     bx, by, bz = cuda.blockIdx.x, cuda.blockIdx.y, cuda.blockIdx.z
 
-    TILE_H = 16
-    TILE_W = 16
-    tid = ty * TILE_W + tx
+    TILE_H = 32
+    TILE_W = 32
+    LINEAR_TID = ty * TILE_W + tx
 
     i = by * TILE_H + ty
     j = bx * TILE_W + tx
 
     Cout, Cin, Kh, Kw = grad_W.shape
+    # bz = c_out * Cin + c_in
+    c_out = bz // Cin
+    c_in = bz % Cin
+
     N, _, H_out, W_out = grad_out.shape
     _, _, H_in, W_in = input.shape
 
-    # bz encodes (c_out, c_in, u, v)
-    taps_per_pair = Kh * Kw
-    pair = bz // taps_per_pair
-    tap  = bz - pair * taps_per_pair
+    s_partial = cuda.shared.array(1024, dtype=float32)
 
-    c_out = pair // Cin
-    c_in  = pair - c_out * Cin
+    # Iterate over kernel dimensions (chunked style)
+    for u in range(Kh):
+        for v in range(Kw):
+            s = float32(0.0)
 
-    u = tap // Kw
-    v = tap - u * Kw
+            if i < H_out and j < W_out:
+                in_row = i + u - padding
+                in_col = j + v - padding
+                
+                if 0 <= in_row < H_in and 0 <= in_col < W_in:
+                    for n in range(N):
+                        s += float32(grad_out[n, c_out, i, j]) * float32(input[n, c_in, in_row, in_col])
 
-    s_partial = cuda.shared.array(256, dtype=float32)
-    s = float32(0.0)
+            s_partial[LINEAR_TID] = s
+            cuda.syncthreads()
 
-    if i < H_out and j < W_out:
-        in_row = i + u - padding
-        in_col = j + v - padding
-        if 0 <= in_row < H_in and 0 <= in_col < W_in:
-            for n in range(N):
-                s += float32(grad_out[n, c_out, i, j]) * float32(input[n, c_in, in_row, in_col])
+            stride = 512
+            while stride > 0:
+                if LINEAR_TID < stride:
+                    s_partial[LINEAR_TID] += s_partial[LINEAR_TID + stride]
+                cuda.syncthreads()
+                stride //= 2
 
-    s_partial[tid] = s
-    cuda.syncthreads()
+            if LINEAR_TID == 0:
+                cuda.atomic.add(grad_W, (c_out, c_in, u, v), s_partial[0])
 
-    stride = 128
-    while stride > 0:
-        if tid < stride:
-            s_partial[tid] += s_partial[tid + stride]
-        cuda.syncthreads()
-        stride //= 2
-
-    if tid == 0:
-        cuda.atomic.add(grad_W, (c_out, c_in, u, v), s_partial[0])
+            cuda.syncthreads()  # barrier between taps
 
 @cuda.jit
 def relu_forward(x, out):

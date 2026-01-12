@@ -73,12 +73,12 @@ class Conv2d:
         Parameters
         ----------
         x : numpy.ndarray
-            Input of shape (H, W).
+            Input of shape (H, W) or (N, H, W) for batched input.
         
         Returns
         -------
         numpy.ndarray
-            Output of shape (H_out, W_out).
+            Output of shape (H_out, W_out) or (N, H_out, W_out).
         """
         self._last_input = x
         bias_val = float(self.bias[0]) if self.use_bias else None
@@ -91,12 +91,12 @@ class Conv2d:
         Parameters
         ----------
         grad_out : numpy.ndarray
-            Gradient from next layer of shape (H_out, W_out).
+            Gradient from next layer of shape (H_out, W_out) or (N, H_out, W_out).
         
         Returns
         -------
         numpy.ndarray
-            Gradient with respect to input of shape (H_in, W_in).
+            Gradient with respect to input of shape (H_in, W_in) or (N, H_in, W_in).
         """
         grad_input = input_backward(grad_out, self.weight, padding=self.padding, dtype=self.dtype)
         return grad_input

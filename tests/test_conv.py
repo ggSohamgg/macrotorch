@@ -112,6 +112,25 @@ class TestConv2dForwardGPU:
         
         assert output.shape == expected.shape
         np.testing.assert_allclose(output, expected, rtol=1e-2, atol=1e-2)
+    
+    def test_forward_batched(self):
+        """Test batched forward pass with (N, H, W) input."""
+        from macrotorch import conv2d_forward
+        
+        np.random.seed(42)
+        N = 4
+        A = np.random.randn(N, 32, 32).astype(np.float32)
+        K = np.random.randn(3, 3).astype(np.float32)
+        
+        output = conv2d_forward(A, K, padding=1)
+        
+        # Check shape
+        assert output.shape == (N, 32, 32)
+        
+        # Check each sample matches individual call
+        for n in range(N):
+            single_out = conv2d_forward(A[n], K, padding=1)
+            np.testing.assert_allclose(output[n], single_out, rtol=1e-5)
 
 
 @pytest.mark.gpu
@@ -132,6 +151,25 @@ class TestConv2dBackwardGPU:
         grad_input = conv2d_input_backward(grad_out, K, padding=padding)
         
         assert grad_input.shape == A.shape
+    
+    def test_input_backward_batched(self):
+        """Test batched input backward pass with (N, H, W) input."""
+        from macrotorch import conv2d_input_backward
+        
+        np.random.seed(42)
+        N = 4
+        grad_out = np.random.randn(N, 32, 32).astype(np.float32)
+        K = np.random.randn(3, 3).astype(np.float32)
+        
+        grad_input = conv2d_input_backward(grad_out, K, padding=1)
+        
+        # Check shape
+        assert grad_input.shape == (N, 32, 32)
+        
+        # Check each sample matches individual call
+        for n in range(N):
+            single_out = conv2d_input_backward(grad_out[n], K, padding=1)
+            np.testing.assert_allclose(grad_input[n], single_out, rtol=1e-5)
     
     def test_bias_backward_shape(self):
         """Test bias gradient has correct shape."""
@@ -400,6 +438,26 @@ class TestMaxPool2D:
         out, indices = maxpool2d_forward(x, pool_size=4)
         
         assert out.shape == (16, 16)
+    
+    def test_maxpool2d_batched(self):
+        """Test batched maxpool2d with (N, H, W) input."""
+        from macrotorch import maxpool2d_forward
+        
+        np.random.seed(42)
+        N = 4
+        x = np.random.randn(N, 32, 32).astype(np.float32)
+        
+        out, indices = maxpool2d_forward(x, pool_size=2)
+        
+        # Check shapes
+        assert out.shape == (N, 16, 16)
+        assert indices.shape == (N, 16, 16)
+        
+        # Check each sample matches individual call
+        for n in range(N):
+            single_out, single_idx = maxpool2d_forward(x[n], pool_size=2)
+            np.testing.assert_allclose(out[n], single_out, rtol=1e-5)
+            np.testing.assert_array_equal(indices[n], single_idx)
 
 
 if __name__ == "__main__":

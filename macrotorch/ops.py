@@ -13,7 +13,7 @@ def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=Non
     Parameters
     ----------
     A : numpy.ndarray
-        Input image/feature map of shape (H, W). Supports float32 or float16 dtype.
+        Input image/feature map of shape (H, W) or (N, H, W) for batched input.
     K : numpy.ndarray
         Convolution kernel/filter of shape (Kh, Kw). Must have same dtype as A.
     padding : int, optional (default=0)
@@ -30,9 +30,18 @@ def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=Non
     Returns
     -------
     numpy.ndarray
-        Convolution output of shape (out_h, out_w) in float32.
+        Convolution output of shape (out_h, out_w) or (N, out_h, out_w) in float32.
     """
-    assert A.ndim == 2 , f"A must be 2D, got shape {A.shape}"
+    # Handle batched input (N, H, W)
+    if A.ndim == 3:
+        N = A.shape[0]
+        results = []
+        for n in range(N):
+            result = forward(A[n], K, padding=padding, bias=bias, dtype=dtype, verbose=(verbose and n==0))
+            results.append(result)
+        return np.stack(results, axis=0)
+    
+    assert A.ndim == 2 , f"A must be 2D or 3D, got shape {A.shape}"
     assert K.ndim == 2 , f"K must be 2D, got shape {K.shape}"
     
     H , W = A.shape
@@ -97,7 +106,7 @@ def input_backward(grad_out, K, padding=0, dtype='auto', verbose=False):
     Parameters
     ----------
     grad_out : numpy.ndarray
-        Gradient flowing back from the next layer, shape (H_out, W_out).
+        Gradient flowing back from the next layer, shape (H_out, W_out) or (N, H_out, W_out).
     K : numpy.ndarray
         Convolution kernel/filter of shape (Kh, Kw). Same kernel used in forward pass.
     padding : int, optional (default=0)
@@ -110,8 +119,17 @@ def input_backward(grad_out, K, padding=0, dtype='auto', verbose=False):
     Returns
     -------
     numpy.ndarray
-        Gradient with respect to input (grad_A) of shape (H_in, W_in) in float32.
+        Gradient with respect to input (grad_A) of shape (H_in, W_in) or (N, H_in, W_in) in float32.
     """
+    # Handle batched input (N, H_out, W_out)
+    if grad_out.ndim == 3:
+        N = grad_out.shape[0]
+        results = []
+        for n in range(N):
+            result = input_backward(grad_out[n], K, padding=padding, dtype=dtype, verbose=(verbose and n==0))
+            results.append(result)
+        return np.stack(results, axis=0)
+    
     assert grad_out.ndim == 2
     assert K.ndim == 2
     
@@ -404,7 +422,7 @@ def maxpool2d_forward(x, pool_size=2, d_x=None, d_out=None, d_indices=None):
     Parameters
     ----------
     x : numpy.ndarray
-        Input array of shape (H, W)
+        Input array of shape (H, W) or (N, H, W) for batched input
     pool_size : int
         Size of pooling window (default: 2)
     d_x : numba.cuda.DeviceNDArray, optional
@@ -419,6 +437,17 @@ def maxpool2d_forward(x, pool_size=2, d_x=None, d_out=None, d_indices=None):
     tuple(numpy.ndarray, numpy.ndarray) or tuple(DeviceNDArray, DeviceNDArray)
         (output, indices) - pooled output and max indices for backward pass
     """
+    # Handle batched input (N, H, W)
+    if x.ndim == 3:
+        N = x.shape[0]
+        out_results = []
+        idx_results = []
+        for n in range(N):
+            out, indices = maxpool2d_forward(x[n], pool_size=pool_size)
+            out_results.append(out)
+            idx_results.append(indices)
+        return np.stack(out_results, axis=0), np.stack(idx_results, axis=0)
+    
     H, W = x.shape
     out_H = H // pool_size
     out_W = W // pool_size

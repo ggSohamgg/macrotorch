@@ -549,6 +549,10 @@ def main():
     print_header("MAXPOOL2D FORWARD - FP32")
     benchmark_maxpool2d(size=(512, 512), pool_size=2, dtype_name='float32')
     
+    # Batched Benchmarks
+    print_header("BATCHED FORWARD - FP32")
+    benchmark_batched_forward(N=16, H=28, W=28, Kh=3, Kw=3, padding=1)
+    
     print("\n" + "="*80)
     print(" BENCHMARK COMPLETE")
     print("="*80 + "\n")
@@ -838,6 +842,109 @@ def benchmark_maxpool2d(size=(512, 512), pool_size=2, dtype_name='float32', num_
     mt_time = np.median(times)
     
     mt_result = d_out.copy_to_host()
+    mt_error = np.abs(mt_result - numpy_result).max()
+    
+    # Results
+    print(f"\n  Results:")
+    print(f"  {'-'*60}")
+    print(f"  {'Implementation':<18} | {'Time (ms)':<12} | {'Speedup':<10} | {'Error':<12}")
+    print(f"  {'-'*60}")
+    print(f"  {'NumPy (CPU)':<18} | {numpy_time:<12.4f} | {'1.00x':<10} | {'Ground Truth':<12}")
+    if TORCH_AVAILABLE:
+        print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {f'{numpy_time/pt_time:.2f}x':<10} | {'~0':<12}")
+    print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {f'{numpy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}':<12}")
+    print(f"  {'-'*60}")
+    
+    if TORCH_AVAILABLE:
+        speedup = pt_time / mt_time
+        if speedup > 1:
+            print(f"\n  MacroTorch vs PyTorch: {speedup:.2f}x faster")
+        else:
+            print(f"\n  MacroTorch vs PyTorch: {1/speedup:.2f}x slower")
+
+
+def benchmark_batched_forward(N=16, H=28, W=28, Kh=3, Kw=3, padding=1, num_runs=10):
+    """Benchmark batched conv2d forward pass."""
+    print(f"\n  Configuration:")
+    print(f"    Batch:        {N}")
+    print(f"    Input:        {H} x {W}")
+    print(f"    Kernel:       {Kh} x {Kw}")
+    print(f"    Padding:      {padding}")
+    print(f"    Runs:         {num_runs}")
+    
+    np.random.seed(42)
+    A = np.random.randn(N, H, W).astype(np.float32)
+    K = np.random.randn(Kh, Kw).astype(np.float32)
+    
+    out_H = H - Kh + 1 + 2 * padding
+    out_W = W - Kw + 1 + 2 * padding
+    
+    # NumPy (CPU) - Ground Truth (loop)
+    def numpy_batched_conv(A, K, padding):
+        results = []
+        K_flipped = np.flip(K)
+        for n in range(A.shape[0]):
+            if padding > 0:
+                A_padded = np.pad(A[n], padding, mode='constant')
+            else:
+                A_padded = A[n]
+            from scipy.signal import correlate2d
+            results.append(correlate2d(A_padded, K, mode='valid'))
+        return np.stack(results)
+    
+    times = []
+    for _ in range(num_runs):
+        start = time.perf_counter()
+        numpy_result = numpy_batched_conv(A, K, padding)
+        times.append((time.perf_counter() - start) * 1000)
+    numpy_time = np.median(times)
+    
+    # PyTorch (GPU)
+    pt_time = None
+    if TORCH_AVAILABLE:
+        t_A = torch.from_numpy(A).cuda().unsqueeze(1)  # (N, 1, H, W)
+        t_K = torch.from_numpy(K).cuda().unsqueeze(0).unsqueeze(0)  # (1, 1, Kh, Kw)
+        
+        for _ in range(5):
+            _ = torch.nn.functional.conv2d(t_A, t_K, padding=padding)
+        torch.cuda.synchronize()
+        
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        times = []
+        for _ in range(num_runs):
+            start_event.record()
+            pt_result = torch.nn.functional.conv2d(t_A, t_K, padding=padding)
+            end_event.record()
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))
+        pt_time = np.median(times)
+    
+    # MacroTorch (GPU) - Uses batch loop
+    for _ in range(5):
+        _ = conv2d_forward(A, K, padding=padding)
+    
+    if TORCH_AVAILABLE:
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        times = []
+        for _ in range(num_runs):
+            start_event.record()
+            mt_result = conv2d_forward(A, K, padding=padding)
+            end_event.record()
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))
+    else:
+        times = []
+        for _ in range(num_runs):
+            start = time.perf_counter()
+            mt_result = conv2d_forward(A, K, padding=padding)
+            cuda.synchronize()
+            times.append((time.perf_counter() - start) * 1000)
+    mt_time = np.median(times)
+    
     mt_error = np.abs(mt_result - numpy_result).max()
     
     # Results

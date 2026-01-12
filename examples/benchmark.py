@@ -447,11 +447,11 @@ def benchmark_weight_backward(N, C, Cout, H, W, Kh, Kw, padding, dtype_name='flo
     d_grad_out = cuda.to_device(grad_out)
     
     # Grid configuration
-    threads = (32, 32)
+    threads = (16, 16)
     blocks = (
-        math.ceil(W_out / 32),
-        math.ceil(H_out / 32),
-        Cout * C
+        math.ceil(W_out / 16),
+        math.ceil(H_out / 16),
+        Cout * C * Kh * Kw
     )
 
     # Warmup
@@ -459,13 +459,8 @@ def benchmark_weight_backward(N, C, Cout, H, W, Kh, Kw, padding, dtype_name='flo
     d_grad_W = cuda.to_device(zeros_host)
     
     for _ in range(5):
-        # Warmup (zeroing is fine here)
-        d_grad_W.copy_to_device(zeros_host) 
+        d_grad_W.copy_to_device(zeros_host)
         WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
-    cuda.synchronize()
-
-    # Zero ONCE before timing loop
-    d_grad_W.copy_to_device(zeros_host)
     cuda.synchronize()
 
     if TORCH_AVAILABLE:
@@ -474,7 +469,8 @@ def benchmark_weight_backward(N, C, Cout, H, W, Kh, Kw, padding, dtype_name='flo
         
         times = []
         for _ in range(num_runs):
-            # NO ZEROING inside timing loop -> pure atomic throughput measurement
+            d_grad_W.copy_to_device(zeros_host)
+            cuda.synchronize() # Ensure zeroing is complete before start (though copy is sync usually on same stream)
             start_event.record()
             WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
             end_event.record()
@@ -483,7 +479,8 @@ def benchmark_weight_backward(N, C, Cout, H, W, Kh, Kw, padding, dtype_name='flo
     else:
         times = []
         for _ in range(num_runs):
-            # NO ZEROING inside timing loop
+            d_grad_W.copy_to_device(zeros_host)
+            cuda.synchronize()
             start = time.perf_counter()
             WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
             cuda.synchronize()
@@ -572,10 +569,10 @@ def main():
     
     # Weight Backward - Large (no SciPy, too slow)
     print_header("WEIGHT BACKWARD (LARGE) - FP32")
-    benchmark_weight_backward(N=8, C=32, Cout=64, H=128, W=128, Kh=3, Kw=3, padding=1, dtype_name='float32', use_scipy=False)
+    benchmark_weight_backward(N=8, C=32, Cout=64, H=128, W=128, Kh=3, Kw=3, padding=1, dtype_name='float32', use_scipy=True)
     
     print_header("WEIGHT BACKWARD (LARGE) - FP16")
-    benchmark_weight_backward(N=8, C=32, Cout=64, H=128, W=128, Kh=3, Kw=3, padding=1, dtype_name='float16', use_scipy=False)
+    benchmark_weight_backward(N=8, C=32, Cout=64, H=128, W=128, Kh=3, Kw=3, padding=1, dtype_name='float16', use_scipy=True)
     
     # ReLU Benchmarks
     print_header("RELU FORWARD - FP32")

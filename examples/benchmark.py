@@ -455,8 +455,11 @@ def benchmark_weight_backward(N, C, Cout, H, W, Kh, Kw, padding, dtype_name='flo
     )
 
     # Warmup
+    zeros_host = np.zeros((Cout, C, Kh, Kw), dtype=np.float32)
+    d_grad_W = cuda.to_device(zeros_host)
+    
     for _ in range(5):
-        d_grad_W = cuda.to_device(np.zeros((Cout, C, Kh, Kw), dtype=np.float32))
+        d_grad_W.copy_to_device(zeros_host)
         WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
     cuda.synchronize()
 
@@ -466,8 +469,8 @@ def benchmark_weight_backward(N, C, Cout, H, W, Kh, Kw, padding, dtype_name='flo
         
         times = []
         for _ in range(num_runs):
-            d_grad_W = cuda.to_device(np.zeros((Cout, C, Kh, Kw), dtype=np.float32))
-            cuda.synchronize() # Wait for zero init
+            d_grad_W.copy_to_device(zeros_host)
+            cuda.synchronize() # Ensure zeroing is complete before start (though copy is sync usually on same stream)
             start_event.record()
             WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
             end_event.record()
@@ -476,7 +479,7 @@ def benchmark_weight_backward(N, C, Cout, H, W, Kh, Kw, padding, dtype_name='flo
     else:
         times = []
         for _ in range(num_runs):
-            d_grad_W = cuda.to_device(np.zeros((Cout, C, Kh, Kw), dtype=np.float32))
+            d_grad_W.copy_to_device(zeros_host)
             cuda.synchronize()
             start = time.perf_counter()
             WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)

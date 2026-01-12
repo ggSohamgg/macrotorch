@@ -528,7 +528,7 @@ def benchmark_weight_backward(N, C, Cout, H, W, Kh, Kw, padding, dtype_name='flo
         print(f"\n  MacroTorch vs PyTorch: {pt_time/mt_time:.2f}x {'faster' if pt_time > mt_time else 'slower'}")
 
 
-def benchmark_weight_backward_2d_legacy(N, H, W, Kh, Kw, padding, dtype_name='float32', num_runs=10):
+def benchmark_weight_backward_2d_legacy(N, H, W, Kh, Kw, padding, dtype_name='float32', use_scipy=True, num_runs=10):
     """Benchmark the 2D-only weight backward kernel (N, H, W) input."""
     from macrotorch.kernels import WEIGHT_KERNEL_2D_LEGACY
     
@@ -548,6 +548,49 @@ def benchmark_weight_backward_2d_legacy(N, H, W, Kh, Kw, padding, dtype_name='fl
     H_out = H - Kh + 1 + 2 * padding
     W_out = W - Kw + 1 + 2 * padding
     grad_out = np.random.randn(N, H_out, W_out).astype(np_dtype)
+    
+    # SciPy (CPU) - Ground Truth
+    numpy_time = None
+    numpy_result = None
+    if use_scipy:
+        start = time.perf_counter()
+        grad_W = np.zeros((Kh, Kw), dtype=np.float32)
+        A_padded = np.pad(A, ((0,0), (padding, padding), (padding, padding)), mode='constant')
+        
+        for n in range(N):
+            grad_W += correlate2d(A_padded[n], grad_out[n], mode='valid')
+        numpy_result = grad_W
+        numpy_time = (time.perf_counter() - start) * 1000
+
+    # PyTorch (GPU)
+    pt_time, pt_std, pt_error = None, None, None
+    pt_result = None
+    if TORCH_AVAILABLE:
+        # PyTorch needs 4D tensors: (N, 1, H, W) to simulate 2D batch
+        t_A = torch.from_numpy(A).unsqueeze(1).cuda().to(torch.float32)
+        t_grad_out = torch.from_numpy(grad_out).unsqueeze(1).cuda().to(torch.float32)
+        
+        # We need weight grad wrt kernel (1, 1, Kh, Kw)
+        # But we sum over batch. To match conv2d_weight behavior for single channel in/out:
+        # PyTorch conv2d_weight expects input (N, Cin, H, W) and returns (Cout, Cin, Kh, Kw)
+        # Here Cin=1, Cout=1.
+        
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        times = []
+        for _ in range(num_runs):
+            start_event.record()
+            pt_out = torch.nn.grad.conv2d_weight(t_A, (1, 1, Kh, Kw), t_grad_out, padding=padding)
+            end_event.record()
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))
+        pt_time = np.median(times)
+        pt_std = np.std(times)
+        pt_result = pt_out.squeeze().cpu().numpy()
+        
+        if use_scipy:
+            pt_error = np.abs(pt_result - numpy_result).max()
     
     # MacroTorch (GPU)
     d_A = cuda.to_device(A)
@@ -582,12 +625,31 @@ def benchmark_weight_backward_2d_legacy(N, H, W, Kh, Kw, padding, dtype_name='fl
     mt_time = np.median(times)
     mt_std = np.std(times)
     
+    mt_result = d_grad_W.copy_to_host()
+    mt_error = None
+    if use_scipy and numpy_result is not None:
+        mt_error = np.abs(mt_result - numpy_result).max()
+    elif TORCH_AVAILABLE and pt_result is not None:
+        mt_error = np.abs(mt_result - pt_result.cpu().numpy()).max()
+    
     print(f"\n  Results:")
-    print(f"  {'-'*50}")
-    print(f"  {'Implementation':<18} | {'Median (ms)':<12} | {'Std (ms)':<10}")
-    print(f"  {'-'*50}")
-    print(f"  {'MacroTorch (2D)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f}")
-    print(f"  {'-'*50}")
+    if numpy_time is not None:
+        print(f"  {'-'*74}")
+        print(f"  {'Implementation':<18} | {'Time (ms)':<12} | {'Speedup':<10} | {'Error':<12}")
+        print(f"  {'-'*74}")
+        print(f"  {'SciPy (CPU)':<18} | {numpy_time:<12.2f} | {'1.00x':<10} | {'Ground Truth':<12}")
+        if TORCH_AVAILABLE:
+            print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {f'{numpy_time/pt_time:.2f}x':<10} | {f'{pt_error:.2e}':<12}")
+        print(f"  {'MacroTorch (2D)':<18} | {mt_time:<12.4f} | {f'{numpy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}':<12}")
+        print(f"  {'-'*74}")
+    else:
+        print(f"  {'-'*50}")
+        print(f"  {'Implementation':<18} | {'Median (ms)':<12} | {'Std (ms)':<10}")
+        print(f"  {'-'*50}")
+        if TORCH_AVAILABLE:
+            print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {pt_std:<10.4f}")
+        print(f"  {'MacroTorch (2D)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f}")
+        print(f"  {'-'*50}")
 
 
 def main():
@@ -638,7 +700,10 @@ def main():
 
     # Weight Backward - 2D Legacy
     print_header("WEIGHT BACKWARD (2D LEGACY) - FP32")
-    benchmark_weight_backward_2d_legacy(N=8, H=128, W=128, Kh=3, Kw=3, padding=1, dtype_name='float32')
+    benchmark_weight_backward_2d_legacy(N=8, H=128, W=128, Kh=3, Kw=3, padding=1, dtype_name='float32', use_scipy=True)
+    
+    print_header("WEIGHT BACKWARD (2D LEGACY) - FP16")
+    benchmark_weight_backward_2d_legacy(N=8, H=128, W=128, Kh=3, Kw=3, padding=1, dtype_name='float16', use_scipy=True)
     
     # ReLU Benchmarks
     print_header("RELU FORWARD - FP32")

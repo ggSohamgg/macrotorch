@@ -222,50 +222,60 @@ def conv2d_backward_weight_shared(input, grad_out, padding, grad_W):
     tx, ty = cuda.threadIdx.x, cuda.threadIdx.y
     bx, by, bz = cuda.blockIdx.x, cuda.blockIdx.y, cuda.blockIdx.z
 
-    TILE_H = 32
-    TILE_W = 32
+    TILE_H = 16
+    TILE_W = 16
     LINEAR_TID = ty * TILE_W + tx
 
     i = by * TILE_H + ty
     j = bx * TILE_W + tx
 
     Cout, Cin, Kh, Kw = grad_W.shape
+    
     # bz = c_out * Cin + c_in
     c_out = bz // Cin
     c_in = bz % Cin
 
     N, _, H_out, W_out = grad_out.shape
     _, _, H_in, W_in = input.shape
+    
+    # Shared memory for reduction
+    s_partial = cuda.shared.array(256, dtype=float32)
 
-    s_partial = cuda.shared.array(1024, dtype=float32)
-
-    # Iterate over kernel dimensions (chunked style)
+    # Optimization: Iterate over kernel dimensions
     for u in range(Kh):
         for v in range(Kw):
             s = float32(0.0)
-
+            
+            # Spatial accumulation for this thread
             if i < H_out and j < W_out:
                 in_row = i + u - padding
                 in_col = j + v - padding
                 
                 if 0 <= in_row < H_in and 0 <= in_col < W_in:
+                    # Loop over batch
+                    # Note: We keep N inside u,v loop for now to avoid storing 
+                    # many partial sums in registers, but we can optimize this 
+                    # further if needed. However, the biggest gain is from 
+                    # reduced grid size and better occupancy.
                     for n in range(N):
                         s += float32(grad_out[n, c_out, i, j]) * float32(input[n, c_in, in_row, in_col])
-
+            
+            # Reduce across threads in block
             s_partial[LINEAR_TID] = s
             cuda.syncthreads()
-
-            stride = 512
+            
+            stride = 128
             while stride > 0:
                 if LINEAR_TID < stride:
                     s_partial[LINEAR_TID] += s_partial[LINEAR_TID + stride]
                 cuda.syncthreads()
                 stride //= 2
-
+            
             if LINEAR_TID == 0:
                 cuda.atomic.add(grad_W, (c_out, c_in, u, v), s_partial[0])
-
-            cuda.syncthreads()  # barrier between taps
+            
+            # Sync before next kernel position to prevent s_partial corruption
+            cuda.syncthreads()
 
 @cuda.jit
 def relu_forward(x, out):

@@ -160,7 +160,7 @@ def weight_backward(grad_out, A, padding=0, dtype='auto', verbose=False, d_grad_
         return_host = False
         
     # Grid Configuration
-    TILE_H, TILE_W = 32, 32
+    TILE_H, TILE_W = 16, 16
     
     threads_per_block = (TILE_W, TILE_H)
     blocks_x = math.ceil(W_out / TILE_W)

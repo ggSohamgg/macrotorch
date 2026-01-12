@@ -110,9 +110,20 @@ Layer class with learnable weights. Handles storing gradients internally.
 
 ---
 
-## 📊 Performance Benchmarks
+## 📊 Performance Benchmarks (Tesla T4)
 
-MacroTorch demonstrates competitive performance with PyTorch's native kernels, often achieving **1.2-2.8x speedup** for weight gradient computation on specific configurations.
+MacroTorch achieves competitive performance, with **custom kernels that beat PyTorch** in specific operations:
+
+| Kernel | Configuration | vs PyTorch |
+| :--- | :--- | :---: |
+| **Weight Backward (2D Legacy)** | 8×128×128, 3×3, FP32 | **🏆 5.3x faster** |
+| **Weight Backward (2D Legacy)** | 8×128×128, 3×3, FP16 | **🏆 3.5x faster** |
+| **ReLU Backward** | 1024×1024, FP32 | **🏆 1.8x faster** |
+
+### Additional Highlights
+- **10-17x speedup** over CPU for forward/backward passes
+- **31-66x speedup** over CPU for bias gradient computation
+- **Better FP16 precision** than PyTorch in bias gradient (2.75e-04 vs 2.27e-01)
 
 **[View Detailed Benchmarks](BENCHMARKS.md)**
 

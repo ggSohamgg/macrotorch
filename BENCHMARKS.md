@@ -74,6 +74,18 @@ All tests and benchmarks were performed on an **NVIDIA Tesla T4 GPU**.
 
 ---
 
+## MaxPool2D
+
+**Configuration**: 512×512 input, pool_size=2, FP32
+
+| Operation | NumPy (CPU) | PyTorch (GPU) | MacroTorch (GPU) | MT vs PT | Error |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| **Forward** | 151.53 ms | 0.03 ms | 0.08 ms | 3.14x slower | `0.00e+00` |
+
+> MacroTorch achieves **1811x speedup** over NumPy CPU with exact accuracy.
+
+---
+
 ## Summary
 
 MacroTorch demonstrates:

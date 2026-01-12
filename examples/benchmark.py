@@ -1,7 +1,7 @@
 """
-MacroTorch Benchmark Suite
+MacroTorch Multi-Channel Benchmark Suite
 
-Benchmarks all MacroTorch CUDA kernels against CPU baselines and optionally PyTorch.
+Benchmarks all MacroTorch 4D CUDA kernels against CPU baselines and optionally PyTorch.
 
 Usage:
     pip install -e .[benchmark]
@@ -10,8 +10,8 @@ Usage:
 
 import numpy as np
 import time
-from scipy.signal import correlate2d
 from numba import cuda
+import math
 
 try:
     import torch
@@ -19,17 +19,36 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
-from macrotorch import conv2d_forward, conv2d_input_backward, conv2d_bias_backward, conv2d_weight_backward, Conv2d, relu, maxpool2d_forward
+from macrotorch import conv2d_forward, conv2d_input_backward, conv2d_bias_backward, conv2d_weight_backward, Conv2d, relu, relu_backward, maxpool2d_forward
 from macrotorch.kernels import WEIGHT_KERNEL, RELU_FORWARD, MAXPOOL2D_FORWARD
-import math
 
 
-def scipy_conv2d(A, K, padding=0):
+def numpy_conv2d_4d(A, K, padding=0, bias=None):
+    """Slow NumPy implementation of 4D convolution for ground truth."""
+    N, Cin, H, W = A.shape
+    Cout, Cin_K, Kh, Kw = K.shape
+    assert Cin == Cin_K
+    
     if padding > 0:
-        A_padded = np.pad(A, padding, mode='constant', constant_values=0)
+        A_padded = np.pad(A, ((0, 0), (0, 0), (padding, padding), (padding, padding)), mode='constant')
     else:
         A_padded = A
-    return correlate2d(A_padded, K, mode='valid')
+        
+    out_h = H - Kh + 1 + 2 * padding
+    out_w = W - Kw + 1 + 2 * padding
+    out = np.zeros((N, Cout, out_h, out_w), dtype=np.float32)
+    
+    for n in range(N):
+        for c_out in range(Cout):
+            for c_in in range(Cin):
+                for i in range(out_h):
+                    for j in range(out_w):
+                        out[n, c_out, i, j] += np.sum(
+                            A_padded[n, c_in, i:i+Kh, j:j+Kw] * K[c_out, c_in]
+                        )
+            if bias is not None:
+                out[n, c_out] += bias[c_out]
+    return out
 
 
 def print_header(title):
@@ -39,14 +58,19 @@ def print_header(title):
 
 
 def benchmark_forward(dtype_name='float32', num_runs=10):
-    """Benchmark forward convolution."""
-    H, W = 512, 512
-    Kh, Kw = 5, 5
-    padding = 2
+    """Benchmark forward convolution (4D)."""
+    # Small dimensions for CPU ground truth to be fast
+    N, C, H, W = 2, 4, 32, 32
+    Cout = 8
+    Kh, Kw = 3, 3
+    padding = 1
     
     np_dtype = np.float32 if dtype_name == 'float32' else np.float16
     
     print(f"\n  Configuration:")
+    print(f"    Batch Size:   {N}")
+    print(f"    In Channels:  {C}")
+    print(f"    Out Channels: {Cout}")
     print(f"    Input Size:   {H} x {W}")
     print(f"    Kernel Size:  {Kh} x {Kw}")
     print(f"    Padding:      {padding}")
@@ -54,27 +78,25 @@ def benchmark_forward(dtype_name='float32', num_runs=10):
     print(f"    Runs:         {num_runs}")
     
     np.random.seed(42)
-    A = np.random.randn(H, W).astype(np_dtype)
-    K = np.random.randn(Kh, Kw).astype(np_dtype)
+    A = np.random.randn(N, C, H, W).astype(np_dtype)
+    K = np.random.randn(Cout, C, Kh, Kw).astype(np_dtype)
+    bias = np.random.randn(Cout).astype(np_dtype)
     
-    # SciPy (CPU) - Ground Truth
-    times = []
-    for _ in range(num_runs):
-        start = time.perf_counter()
-        scipy_out = scipy_conv2d(A.astype(np.float32), K.astype(np.float32), padding)
-        times.append((time.perf_counter() - start) * 1000)
-    scipy_time = np.median(times)
-    scipy_std = np.std(times)
+    # NumPy (CPU) - Ground Truth
+    start = time.perf_counter()
+    numpy_out = numpy_conv2d_4d(A.astype(np.float32), K.astype(np.float32), padding, bias.astype(np.float32))
+    numpy_time = (time.perf_counter() - start) * 1000
     
     # PyTorch (GPU)
     pt_time, pt_std, pt_error = None, None, None
     if TORCH_AVAILABLE:
         pt_dtype = torch.float32 if dtype_name == 'float32' else torch.float16
-        t_A = torch.from_numpy(A).cuda().unsqueeze(0).unsqueeze(0).to(pt_dtype)
-        t_K = torch.from_numpy(K).cuda().unsqueeze(0).unsqueeze(0).to(pt_dtype)
+        t_A = torch.from_numpy(A).cuda().to(pt_dtype)
+        t_K = torch.from_numpy(K).cuda().to(pt_dtype)
+        t_bias = torch.from_numpy(bias).cuda().to(pt_dtype)
         
         for _ in range(5):
-            _ = torch.nn.functional.conv2d(t_A, t_K, padding=padding)
+            _ = torch.nn.functional.conv2d(t_A, t_K, t_bias, padding=padding)
         torch.cuda.synchronize()
         
         start_event = torch.cuda.Event(enable_timing=True)
@@ -83,17 +105,17 @@ def benchmark_forward(dtype_name='float32', num_runs=10):
         times = []
         for _ in range(num_runs):
             start_event.record()
-            pt_out = torch.nn.functional.conv2d(t_A, t_K, padding=padding)
+            pt_out = torch.nn.functional.conv2d(t_A, t_K, t_bias, padding=padding)
             end_event.record()
             torch.cuda.synchronize()
             times.append(start_event.elapsed_time(end_event))
         pt_time = np.median(times)
         pt_std = np.std(times)
-        pt_error = np.abs(pt_out.squeeze().cpu().numpy().astype(np.float32) - scipy_out).max()
+        pt_error = np.abs(pt_out.cpu().numpy().astype(np.float32) - numpy_out).max()
     
     # MacroTorch (GPU)
     for _ in range(5):
-        _ = conv2d_forward(A, K, padding=padding)
+        _ = conv2d_forward(A, K, padding=padding, bias=bias)
     
     if TORCH_AVAILABLE:
         start_event = torch.cuda.Event(enable_timing=True)
@@ -102,7 +124,7 @@ def benchmark_forward(dtype_name='float32', num_runs=10):
         times = []
         for _ in range(num_runs):
             start_event.record()
-            mt_out = conv2d_forward(A, K, padding=padding)
+            mt_out = conv2d_forward(A, K, padding=padding, bias=bias)
             end_event.record()
             torch.cuda.synchronize()
             times.append(start_event.elapsed_time(end_event))
@@ -110,72 +132,82 @@ def benchmark_forward(dtype_name='float32', num_runs=10):
         times = []
         for _ in range(num_runs):
             start = time.perf_counter()
-            mt_out = conv2d_forward(A, K, padding=padding)
+            mt_out = conv2d_forward(A, K, padding=padding, bias=bias)
             times.append((time.perf_counter() - start) * 1000)
     mt_time = np.median(times)
     mt_std = np.std(times)
-    mt_error = np.abs(mt_out - scipy_out).max()
+    mt_error = np.abs(mt_out - numpy_out).max()
     
     # Results
     print(f"\n  Results:")
     print(f"  {'-'*74}")
     print(f"  {'Implementation':<18} | {'Median (ms)':<12} | {'Std (ms)':<10} | {'Speedup':<10} | {'Max Error':<12}")
     print(f"  {'-'*74}")
-    print(f"  {'SciPy (CPU)':<18} | {scipy_time:<12.4f} | {scipy_std:<10.4f} | {'1.00x':<10} | {'Ground Truth':<12}")
+    print(f"  {'NumPy (CPU)':<18} | {numpy_time:<12.4f} | {'N/A':<10} | {'1.00x':<10} | {'Ground Truth':<12}")
     if TORCH_AVAILABLE:
-        print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {pt_std:<10.4f} | {f'{scipy_time/pt_time:.2f}x':<10} | {f'{pt_error:.2e}':<12}")
-    print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f} | {f'{scipy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}':<12}")
+        print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {pt_std:<10.4f} | {f'{numpy_time/pt_time:.2f}x':<10} | {f'{pt_error:.2e}':<12}")
+    print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f} | {f'{numpy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}':<12}")
     print(f"  {'-'*74}")
-    
-    if TORCH_AVAILABLE:
-        print(f"\n  MacroTorch vs PyTorch: {pt_time/mt_time:.2f}x {'faster' if pt_time > mt_time else 'slower'}")
 
 
 def benchmark_input_backward(dtype_name='float32', num_runs=10):
-    """Benchmark input gradient computation."""
-    H, W = 512, 512
-    Kh, Kw = 5, 5
-    padding = 2
+    """Benchmark input gradient computation (4D)."""
+    N, C, H, W = 2, 4, 32, 32
+    Cout = 8
+    Kh, Kw = 3, 3
+    padding = 1
     
     np_dtype = np.float32 if dtype_name == 'float32' else np.float16
     
     print(f"\n  Configuration:")
+    print(f"    Batch Size:   {N}")
+    print(f"    In Channels:  {C}")
+    print(f"    Out Channels: {Cout}")
     print(f"    Input Size:   {H} x {W}")
-    print(f"    Kernel Size:  {Kh} x {Kw}")
-    print(f"    Padding:      {padding}")
     print(f"    Precision:    {dtype_name.upper()}")
     print(f"    Runs:         {num_runs}")
     
     np.random.seed(42)
-    A = np.random.randn(H, W).astype(np_dtype)
-    K = np.random.randn(Kh, Kw).astype(np_dtype)
-    K_flipped = K[::-1, ::-1].copy()
+    A = np.random.randn(N, C, H, W).astype(np_dtype)
+    K = np.random.randn(Cout, C, Kh, Kw).astype(np_dtype)
     
     output = conv2d_forward(A, K, padding=padding)
     grad_out = np.random.randn(*output.shape).astype(np_dtype)
     
-    # SciPy (CPU) - Ground Truth (full convolution with flipped kernel)
-    times = []
-    for _ in range(num_runs):
-        start = time.perf_counter()
-        scipy_result = correlate2d(grad_out.astype(np.float32), K_flipped.astype(np.float32), mode='full')
-        # Crop to input size
-        start_h = (scipy_result.shape[0] - H) // 2
-        start_w = (scipy_result.shape[1] - W) // 2
-        scipy_result = scipy_result[start_h:start_h+H, start_w:start_w+W]
-        times.append((time.perf_counter() - start) * 1000)
-    scipy_time = np.median(times)
-    scipy_std = np.std(times)
+    # NumPy (CPU) - Ground Truth
+    def numpy_input_backward(grad_out, K, padding):
+        N, Cout, out_h, out_w = grad_out.shape
+        Cout_K, Cin, Kh, Kw = K.shape
+        H_in = out_h + Kh - 1 - 2 * padding
+        W_in = out_w + Kw - 1 - 2 * padding
+        grad_A = np.zeros((N, Cin, H_in, W_in), dtype=np.float32)
+        
+        for n in range(N):
+            for c_out in range(Cout):
+                for c_in in range(Cin):
+                    for i in range(out_h):
+                        for j in range(out_w):
+                            for u in range(Kh):
+                                for v in range(Kw):
+                                    in_r = i + u - padding
+                                    in_c = j + v - padding
+                                    if 0 <= in_r < H_in and 0 <= in_c < W_in:
+                                        grad_A[n, c_in, in_r, in_c] += grad_out[n, c_out, i, j] * K[c_out, c_in, u, v]
+        return grad_A
+
+    start = time.perf_counter()
+    numpy_result = numpy_input_backward(grad_out.astype(np.float32), K.astype(np.float32), padding)
+    numpy_time = (time.perf_counter() - start) * 1000
     
     # PyTorch (GPU)
     pt_time, pt_std, pt_error = None, None, None
     if TORCH_AVAILABLE:
         pt_dtype = torch.float32 if dtype_name == 'float32' else torch.float16
-        t_grad = torch.from_numpy(grad_out).cuda().unsqueeze(0).unsqueeze(0).to(pt_dtype)
-        t_K = torch.from_numpy(K).cuda().unsqueeze(0).unsqueeze(0).to(pt_dtype)
+        t_grad = torch.from_numpy(grad_out).cuda().to(pt_dtype)
+        t_K = torch.from_numpy(K).cuda().to(pt_dtype)
         
         for _ in range(5):
-            _ = torch.nn.functional.conv_transpose2d(t_grad, t_K, padding=padding)
+            _ = torch.nn.grad.conv2d_input((N, C, H, W), t_K, t_grad, padding=padding)
         torch.cuda.synchronize()
         
         start_event = torch.cuda.Event(enable_timing=True)
@@ -184,14 +216,13 @@ def benchmark_input_backward(dtype_name='float32', num_runs=10):
         times = []
         for _ in range(num_runs):
             start_event.record()
-            pt_result = torch.nn.functional.conv_transpose2d(t_grad, t_K, padding=padding)
+            pt_result = torch.nn.grad.conv2d_input((N, C, H, W), t_K, t_grad, padding=padding)
             end_event.record()
             torch.cuda.synchronize()
             times.append(start_event.elapsed_time(end_event))
         pt_time = np.median(times)
         pt_std = np.std(times)
-        pt_out_np = pt_result.squeeze().cpu().numpy().astype(np.float32)
-        pt_error = np.abs(pt_out_np - scipy_result).max()
+        pt_error = np.abs(pt_result.cpu().numpy().astype(np.float32) - numpy_result).max()
     
     # MacroTorch (GPU)
     for _ in range(5):
@@ -204,7 +235,7 @@ def benchmark_input_backward(dtype_name='float32', num_runs=10):
         times = []
         for _ in range(num_runs):
             start_event.record()
-            grad_input = conv2d_input_backward(grad_out, K, padding=padding)
+            mt_grad_in = conv2d_input_backward(grad_out, K, padding=padding)
             end_event.record()
             torch.cuda.synchronize()
             times.append(start_event.elapsed_time(end_event))
@@ -212,29 +243,26 @@ def benchmark_input_backward(dtype_name='float32', num_runs=10):
         times = []
         for _ in range(num_runs):
             start = time.perf_counter()
-            grad_input = conv2d_input_backward(grad_out, K, padding=padding)
+            mt_grad_in = conv2d_input_backward(grad_out, K, padding=padding)
             times.append((time.perf_counter() - start) * 1000)
     mt_time = np.median(times)
     mt_std = np.std(times)
-    mt_error = np.abs(grad_input - scipy_result).max()
+    mt_error = np.abs(mt_grad_in - numpy_result).max()
     
     # Results
     print(f"\n  Results:")
     print(f"  {'-'*74}")
     print(f"  {'Implementation':<18} | {'Median (ms)':<12} | {'Std (ms)':<10} | {'Speedup':<10} | {'Max Error':<12}")
     print(f"  {'-'*74}")
-    print(f"  {'SciPy (CPU)':<18} | {scipy_time:<12.4f} | {scipy_std:<10.4f} | {'1.00x':<10} | {'Ground Truth':<12}")
+    print(f"  {'NumPy (CPU)':<18} | {numpy_time:<12.4f} | {'N/A':<10} | {'1.00x':<10} | {'Ground Truth':<12}")
     if TORCH_AVAILABLE:
-        print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {pt_std:<10.4f} | {f'{scipy_time/pt_time:.2f}x':<10} | {f'{pt_error:.2e}':<12}")
-    print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f} | {f'{scipy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}':<12}")
+        print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {pt_std:<10.4f} | {f'{numpy_time/pt_time:.2f}x':<10} | {f'{pt_error:.2e}':<12}")
+    print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f} | {f'{numpy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}':<12}")
     print(f"  {'-'*74}")
-    
-    if TORCH_AVAILABLE:
-        print(f"\n  MacroTorch vs PyTorch: {pt_time/mt_time:.2f}x {'faster' if pt_time > mt_time else 'slower'}")
 
 
 def benchmark_bias_backward(dtype_name='float32', num_runs=10):
-    """Benchmark bias gradient computation."""
+    """Benchmark bias gradient computation (4D)."""
     N, C, H, W = 32, 128, 64, 64
     
     np_dtype = np.float32 if dtype_name == 'float32' else np.float16
@@ -250,13 +278,9 @@ def benchmark_bias_backward(dtype_name='float32', num_runs=10):
     grad_out = np.random.randn(N, C, H, W).astype(np_dtype)
     
     # NumPy (CPU) - Ground Truth
-    times = []
-    for _ in range(num_runs):
-        start = time.perf_counter()
-        numpy_result = np.sum(grad_out.astype(np.float32), axis=(0, 2, 3))
-        times.append((time.perf_counter() - start) * 1000)
-    numpy_time = np.median(times)
-    numpy_std = np.std(times)
+    start = time.perf_counter()
+    numpy_result = np.sum(grad_out.astype(np.float32), axis=(0, 2, 3))
+    numpy_time = (time.perf_counter() - start) * 1000
     
     # PyTorch (GPU)
     pt_time, pt_std, pt_error = None, None, None
@@ -282,12 +306,9 @@ def benchmark_bias_backward(dtype_name='float32', num_runs=10):
         pt_std = np.std(times)
         pt_error = np.abs(pt_result.cpu().numpy().astype(np.float32) - numpy_result).max()
     
-    # MacroTorch (GPU) - Pre-allocated
-    d_input = cuda.to_device(grad_out)
-    d_output = cuda.device_array(C, dtype=np.float32)
-    
+    # MacroTorch (GPU)
     for _ in range(5):
-        _ = conv2d_bias_backward(None, d_grad_out=d_input, d_grad_bias=d_output)
+        _ = conv2d_bias_backward(grad_out)
     
     if TORCH_AVAILABLE:
         start_event = torch.cuda.Event(enable_timing=True)
@@ -296,7 +317,7 @@ def benchmark_bias_backward(dtype_name='float32', num_runs=10):
         times = []
         for _ in range(num_runs):
             start_event.record()
-            conv2d_bias_backward(None, d_grad_out=d_input, d_grad_bias=d_output)
+            mt_result = conv2d_bias_backward(grad_out)
             end_event.record()
             torch.cuda.synchronize()
             times.append(start_event.elapsed_time(end_event))
@@ -304,12 +325,11 @@ def benchmark_bias_backward(dtype_name='float32', num_runs=10):
         times = []
         for _ in range(num_runs):
             start = time.perf_counter()
-            conv2d_bias_backward(None, d_grad_out=d_input, d_grad_bias=d_output)
+            mt_result = conv2d_bias_backward(grad_out)
             cuda.synchronize()
             times.append((time.perf_counter() - start) * 1000)
     mt_time = np.median(times)
     mt_std = np.std(times)
-    mt_result = d_output.copy_to_host()
     mt_error = np.abs(mt_result - numpy_result).max()
     
     # Results
@@ -317,22 +337,20 @@ def benchmark_bias_backward(dtype_name='float32', num_runs=10):
     print(f"  {'-'*74}")
     print(f"  {'Implementation':<18} | {'Median (ms)':<12} | {'Std (ms)':<10} | {'Speedup':<10} | {'Max Error':<12}")
     print(f"  {'-'*74}")
-    print(f"  {'NumPy (CPU)':<18} | {numpy_time:<12.4f} | {numpy_std:<10.4f} | {'1.00x':<10} | {'Ground Truth':<12}")
+    print(f"  {'NumPy (CPU)':<18} | {numpy_time:<12.4f} | {'N/A':<10} | {'1.00x':<10} | {'Ground Truth':<12}")
     if TORCH_AVAILABLE:
         print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {pt_std:<10.4f} | {f'{numpy_time/pt_time:.2f}x':<10} | {f'{pt_error:.2e}':<12}")
     print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f} | {f'{numpy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}':<12}")
     print(f"  {'-'*74}")
-    
-    if TORCH_AVAILABLE:
-        print(f"\n  MacroTorch vs PyTorch: {pt_time/mt_time:.2f}x {'faster' if pt_time > mt_time else 'slower'}")
 
 
-def benchmark_weight_backward(N, H, W, Kh, Kw, padding, dtype_name='float32', use_scipy=True, num_runs=10):
-    """Benchmark weight gradient computation."""
+def benchmark_weight_backward(N, C, Cout, H, W, Kh, Kw, padding, dtype_name='float32', use_numpy=True, num_runs=10):
+    """Benchmark weight gradient computation (4D)."""
     np_dtype = np.float32 if dtype_name == 'float32' else np.float16
     
     print(f"\n  Configuration:")
     print(f"    Batch:        {N}")
+    print(f"    Channels:     {C} -> {Cout}")
     print(f"    Input:        {H} x {W}")
     print(f"    Kernel Size:  {Kh} x {Kw}")
     print(f"    Padding:      {padding}")
@@ -340,45 +358,42 @@ def benchmark_weight_backward(N, H, W, Kh, Kw, padding, dtype_name='float32', us
     print(f"    Runs:         {num_runs}")
     
     np.random.seed(42)
-    # Create input and grad_out
-    A = np.random.randn(N, H, W).astype(np_dtype)
+    A = np.random.randn(N, C, H, W).astype(np_dtype)
     H_out = H - Kh + 1 + 2 * padding
     W_out = W - Kw + 1 + 2 * padding
-    grad_out = np.random.randn(N, H_out, W_out).astype(np_dtype)
+    grad_out = np.random.randn(N, Cout, H_out, W_out).astype(np_dtype)
     
-    # NumPy (CPU) - Ground Truth (single run)
+    # NumPy (CPU) - Ground Truth
     numpy_time = None
     numpy_result = None
-    if use_scipy:
-        # Convert to FP32 for ground truth computation
-        input_fp32 = A.astype(np.float32)
-        grad_out_fp32 = grad_out.astype(np.float32)
-        
+    if use_numpy:
+        def numpy_weight_backward(grad_out, A, Kh, Kw, padding):
+            N, Cout, H_out, W_out = grad_out.shape
+            _, Cin, H_in, W_in = A.shape
+            grad_W = np.zeros((Cout, Cin, Kh, Kw), dtype=np.float32)
+            A_padded = np.pad(A, ((0,0), (0,0), (padding, padding), (padding, padding)), mode='constant')
+            for n in range(N):
+                for co in range(Cout):
+                    for ci in range(Cin):
+                        for u in range(Kh):
+                            for v in range(Kw):
+                                grad_W[co, ci, u, v] += np.sum(
+                                    grad_out[n, co] * A_padded[n, ci, u:u+H_out, v:v+W_out]
+                                )
+            return grad_W
+
         start = time.perf_counter()
-        numpy_result = np.zeros((Kh, Kw), dtype=np.float32)
-        for u in range(Kh):
-            for v in range(Kw):
-                for n in range(N):
-                    for i in range(H_out):
-                        for j in range(W_out):
-                            in_row = i - padding + u
-                            in_col = j - padding + v
-                            if 0 <= in_row < H and 0 <= in_col < W:
-                                numpy_result[u, v] += grad_out_fp32[n, i, j] * input_fp32[n, in_row, in_col]
+        numpy_result = numpy_weight_backward(grad_out.astype(np.float32), A.astype(np.float32), Kh, Kw, padding)
         numpy_time = (time.perf_counter() - start) * 1000
     
-    # PyTorch (GPU) - Always use FP32 for fair comparison with SciPy ground truth
+    # PyTorch (GPU)
     pt_time, pt_std, pt_error = None, None, None
-    pt_out_np = None
     if TORCH_AVAILABLE:
-        # Convert to FP32 for computation (matching standalone benchmark)
-        t_input = torch.tensor(A, device='cuda', dtype=torch.float32).unsqueeze(1)  # (N, 1, H, W)
-        t_grad_out = torch.tensor(grad_out, device='cuda', dtype=torch.float32).unsqueeze(1)  # (N, 1, H_out, W_out)
-        
-        weight_shape = (1, 1, Kh, Kw)
+        t_A = torch.from_numpy(A).cuda().to(torch.float32)
+        t_grad_out = torch.from_numpy(grad_out).cuda().to(torch.float32)
         
         for _ in range(5):
-            _ = torch.nn.grad.conv2d_weight(t_input, weight_shape, t_grad_out, padding=padding)
+            _ = torch.nn.grad.conv2d_weight(t_A, (Cout, C, Kh, Kw), t_grad_out, padding=padding)
         torch.cuda.synchronize()
         
         start_event = torch.cuda.Event(enable_timing=True)
@@ -387,476 +402,234 @@ def benchmark_weight_backward(N, H, W, Kh, Kw, padding, dtype_name='float32', us
         times = []
         for _ in range(num_runs):
             start_event.record()
-            pt_result = torch.nn.grad.conv2d_weight(t_input, weight_shape, t_grad_out, padding=padding)
+            pt_result = torch.nn.grad.conv2d_weight(t_A, (Cout, C, Kh, Kw), t_grad_out, padding=padding)
             end_event.record()
             torch.cuda.synchronize()
             times.append(start_event.elapsed_time(end_event))
         pt_time = np.median(times)
         pt_std = np.std(times)
         
-        pt_out_np = pt_result.squeeze().cpu().numpy().astype(np.float32)
-        if use_scipy and numpy_result is not None:
-            pt_error = np.abs(pt_out_np - numpy_result).max()
+        if use_numpy:
+            pt_error = np.abs(pt_result.cpu().numpy().astype(np.float32) - numpy_result).max()
     
-    # MacroTorch (GPU) - Direct kernel launch for fair comparison
-    if A.ndim == 2:
-        A_reshaped = A.reshape(1, *A.shape)
-        grad_out_reshaped = grad_out.reshape(1, *grad_out.shape)
-    else:
-        A_reshaped = A
-        grad_out_reshaped = grad_out
-
-    d_A = cuda.to_device(A_reshaped)
-    d_grad_out = cuda.to_device(grad_out_reshaped)
-    
-    # Grid configuration (same as standalone)
-    threads = (16, 16)
-    blocks = (
-        math.ceil(W_out / 16),
-        math.ceil(H_out / 16),
-        Kh * Kw
-    )
-
-    # Warmup
+    # MacroTorch (GPU)
     for _ in range(5):
-        d_grad_W = cuda.to_device(np.zeros((Kh, Kw), dtype=np.float32))
-        WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
-    cuda.synchronize()
-
-    # Benchmark - Direct kernel launch with CUDA Events
+        _ = conv2d_weight_backward(grad_out, A, padding=padding)
+    
     if TORCH_AVAILABLE:
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
         
         times = []
         for _ in range(num_runs):
-            d_grad_W = cuda.to_device(np.zeros((Kh, Kw), dtype=np.float32))
-            cuda.synchronize()
             start_event.record()
-            WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
+            mt_result = conv2d_weight_backward(grad_out, A, padding=padding)
             end_event.record()
             torch.cuda.synchronize()
             times.append(start_event.elapsed_time(end_event))
     else:
         times = []
         for _ in range(num_runs):
-            d_grad_W = cuda.to_device(np.zeros((Kh, Kw), dtype=np.float32))
-            cuda.synchronize()
             start = time.perf_counter()
-            WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
+            mt_result = conv2d_weight_backward(grad_out, A, padding=padding)
             cuda.synchronize()
             times.append((time.perf_counter() - start) * 1000)
     mt_time = np.median(times)
     mt_std = np.std(times)
     
-    mt_result = d_grad_W.copy_to_host()
-    
-    # Compute error
-    mt_error = None
-    if use_scipy and numpy_result is not None:
+    if use_numpy:
         mt_error = np.abs(mt_result - numpy_result).max()
-    elif TORCH_AVAILABLE and pt_out_np is not None:
-        # Compare against PyTorch when NumPy not available
-        mt_error = np.abs(mt_result - pt_out_np).max()
+    elif TORCH_AVAILABLE:
+        mt_error = np.abs(mt_result - pt_result.cpu().numpy()).max()
     
     # Results
     print(f"\n  Results:")
-    if use_scipy and numpy_time is not None:
+    if use_numpy:
         print(f"  {'-'*74}")
         print(f"  {'Implementation':<18} | {'Time (ms)':<12} | {'Speedup':<10} | {'Max Error':<12}")
         print(f"  {'-'*74}")
-        print(f"  {'NumPy (CPU)':<18} | {numpy_time:<12.2f} | {'1.00x':<10} | {'Ground Truth':<12}")
+        print(f"  {'NumPy (CPU)':<18} | {numpy_time:<12.4f} | {'1.00x':<10} | {'Ground Truth'}")
         if TORCH_AVAILABLE:
-            print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {f'{numpy_time/pt_time:.2f}x':<10} | {f'{pt_error:.2e}':<12}")
-        print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {f'{numpy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}':<12}")
+            print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {f'{numpy_time/pt_time:.2f}x':<10} | {f'{pt_error:.2e}'}")
+        print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {f'{numpy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}'}")
         print(f"  {'-'*74}")
     else:
-        # No SciPy - show error vs PyTorch if available
-        if TORCH_AVAILABLE and mt_error is not None:
-            print(f"  {'-'*74}")
-            print(f"  {'Implementation':<18} | {'Median (ms)':<12} | {'Std (ms)':<10} | {'Error vs PT':<12}")
-            print(f"  {'-'*74}")
-            print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {pt_std:<10.4f} | {'Reference':<12}")
-            print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f} | {f'{mt_error:.2e}':<12}")
-            print(f"  {'-'*74}")
-        else:
-            print(f"  {'-'*50}")
-            print(f"  {'Implementation':<18} | {'Median (ms)':<12} | {'Std (ms)':<10}")
-            print(f"  {'-'*50}")
-            if TORCH_AVAILABLE:
-                print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {pt_std:<10.4f}")
-            print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f}")
-            print(f"  {'-'*50}")
+        print(f"  {'-'*50}")
+        print(f"  {'Implementation':<18} | {'Median (ms)':<12} | {'Std (ms)':<10}")
+        print(f"  {'-'*50}")
+        if TORCH_AVAILABLE:
+            print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {pt_std:<10.4f}")
+        print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f}")
+        print(f"  {'-'*50}")
+
+
+def benchmark_relu_forward(size=(32, 64, 128, 128), dtype_name='float32', num_runs=10):
+    """Benchmark ReLU forward pass (4D)."""
+    np_dtype = np.float32 if dtype_name == 'float32' else np.float16
+    print(f"\n  Configuration: Size={size}, Precision={dtype_name.upper()}, Runs={num_runs}")
+    
+    np.random.seed(42)
+    x = np.random.randn(*size).astype(np_dtype)
+    start = time.perf_counter()
+    numpy_result = np.maximum(0, x)
+    numpy_time = (time.perf_counter() - start) * 1000
     
     if TORCH_AVAILABLE:
-        print(f"\n  MacroTorch vs PyTorch: {pt_time/mt_time:.2f}x {'faster' if pt_time > mt_time else 'slower'}")
+        t_x = torch.from_numpy(x).cuda().to(torch.float32 if dtype_name=='float32' else torch.float16)
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        times = []
+        for _ in range(num_runs):
+            start_event.record()
+            _ = torch.relu(t_x)
+            end_event.record()
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))
+        pt_time = np.median(times)
+        
+    for _ in range(5): _ = relu(x)
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+    times = []
+    for _ in range(num_runs):
+        start_event.record()
+        mt_out = relu(x)
+        end_event.record()
+        torch.cuda.synchronize()
+        times.append(start_event.elapsed_time(end_event))
+    mt_time = np.median(times)
+    mt_error = np.abs(mt_out - numpy_result).max()
+    
+    print(f"\n  Results:")
+    print(f"  {'-'*60}")
+    print(f"  {'Implementation':<18} | {'Time (ms)':<12} | {'Speedup':<10} | {'Error':<12}")
+    print(f"  {'-'*60}")
+    print(f"  {'NumPy (CPU)':<18} | {numpy_time:<12.4f} | {'1.00x':<10} | {'Ground Truth'}")
+    if TORCH_AVAILABLE:
+        print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {f'{numpy_time/pt_time:.2f}x':<10} | {'~0'}")
+    print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {f'{numpy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}'}")
+
+
+def benchmark_relu_backward(size=(32, 64, 128, 128), dtype_name='float32', num_runs=10):
+    """Benchmark ReLU backward pass (4D)."""
+    np_dtype = np.float32 if dtype_name == 'float32' else np.float16
+    print(f"\n  Configuration: Size={size}, Precision={dtype_name.upper()}, Runs={num_runs}")
+    
+    np.random.seed(42)
+    x = np.random.randn(*size).astype(np_dtype)
+    grad_out = np.random.randn(*size).astype(np_dtype)
+    start = time.perf_counter()
+    numpy_result = grad_out * (x > 0).astype(np.float32)
+    numpy_time = (time.perf_counter() - start) * 1000
+    
+    if TORCH_AVAILABLE:
+        t_x = torch.from_numpy(x).cuda().requires_grad_(True)
+        t_grad_out = torch.from_numpy(grad_out).cuda()
+        t_out = torch.relu(t_x)
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        times = []
+        for _ in range(num_runs):
+            start_event.record()
+            t_out.backward(t_grad_out, retain_graph=True)
+            end_event.record()
+            torch.cuda.synchronize()
+            t_x.grad = None
+            times.append(start_event.elapsed_time(end_event))
+        pt_time = np.median(times)
+        
+    for _ in range(5): _ = relu_backward(x, grad_out)
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+    times = []
+    for _ in range(num_runs):
+        start_event.record()
+        mt_grad_in = relu_backward(x, grad_out)
+        end_event.record()
+        torch.cuda.synchronize()
+        times.append(start_event.elapsed_time(end_event))
+    mt_time = np.median(times)
+    mt_error = np.abs(mt_grad_in - numpy_result).max()
+    
+    print(f"\n  Results:")
+    print(f"  {'-'*60}")
+    print(f"  {'Implementation':<18} | {'Time (ms)':<12} | {'Speedup':<10} | {'Error':<12}")
+    print(f"  {'-'*60}")
+    print(f"  {'NumPy (CPU)':<18} | {numpy_time:<12.4f} | {'1.00x':<10} | {'Ground Truth'}")
+    if TORCH_AVAILABLE:
+        print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {f'{numpy_time/pt_time:.2f}x':<10} | {'~0'}")
+    print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {f'{numpy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}'}")
+
+
+def benchmark_maxpool2d(size=(512, 512), pool_size=2, dtype_name='float32', num_runs=10):
+    """Benchmark MaxPool2D forward (2D Fallback)."""
+    h, w = size
+    print(f"\n  Configuration: HW={h}x{w}, Pool={pool_size}, Dtype={dtype_name.upper()}")
+    x_2d = np.random.randn(h, w).astype(np.float32)
+    start = time.perf_counter()
+    def numpy_maxpool(x, p):
+        oh, ow = x.shape[0]//p, x.shape[1]//p
+        out = np.zeros((oh, ow), dtype=x.dtype)
+        for i in range(oh):
+            for j in range(ow):
+                out[i,j] = x[i*p:(i+1)*p, j*p:(j+1)*p].max()
+        return out
+    numpy_res = numpy_maxpool(x_2d, pool_size)
+    numpy_time = (time.perf_counter()-start)*1000
+    for _ in range(5): _, _ = maxpool2d_forward(x_2d, pool_size)
+    start = time.perf_counter()
+    mt_out, _ = maxpool2d_forward(x_2d, pool_size)
+    mt_time = (time.perf_counter()-start)*1000
+    mt_error = np.abs(mt_out - numpy_res).max()
+    print(f"\n  Results:")
+    print(f"  {'-'*60}")
+    print(f"  {'Implementation':<18} | {'Time (ms)':<12} | {'Speedup':<10} | {'Error'}")
+    print(f"  {'-'*60}")
+    print(f"  {'NumPy (CPU)':<18} | {numpy_time:<12.4f} | {'1.00x':<10} | {'Ground Truth'}")
+    print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {f'{numpy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}'}")
 
 
 def main():
     print("\n" + "="*80)
-    print(" MacroTorch Benchmark Suite")
+    print(" MacroTorch Multi-Channel Benchmark Suite")
     print("="*80)
     
     if TORCH_AVAILABLE:
         print(f"\n  PyTorch Version: {torch.__version__}")
         print(f"  CUDA Device:     {torch.cuda.get_device_name(0)}")
-    else:
-        print("\n  PyTorch: NOT INSTALLED (install with: pip install macrotorch[benchmark])")
     
-    # Forward Pass
-    print_header("FORWARD PASS - FP32")
+    print_header("FORWARD PASS (4D)")
     benchmark_forward(dtype_name='float32')
-    
-    print_header("FORWARD PASS - FP16")
     benchmark_forward(dtype_name='float16')
     
-    # Input Backward
-    print_header("INPUT BACKWARD - FP32")
+    print_header("INPUT BACKWARD (4D)")
     benchmark_input_backward(dtype_name='float32')
-    
-    print_header("INPUT BACKWARD - FP16")
     benchmark_input_backward(dtype_name='float16')
     
-    # Bias Backward
-    print_header("BIAS BACKWARD - FP32")
+    print_header("BIAS BACKWARD (4D)")
     benchmark_bias_backward(dtype_name='float32')
-    
-    print_header("BIAS BACKWARD - FP16")
     benchmark_bias_backward(dtype_name='float16')
     
-    # Weight Backward - Small (with SciPy validation)
-    print_header("WEIGHT BACKWARD (SMALL) - FP32")
-    benchmark_weight_backward(N=8, H=64, W=64, Kh=5, Kw=5, padding=2, dtype_name='float32', use_scipy=True)
+    print_header("WEIGHT BACKWARD (SMALL) (4D)")
+    benchmark_weight_backward(N=2, C=4, Cout=8, H=32, W=32, Kh=3, Kw=3, padding=1, dtype_name='float32', use_numpy=True)
+    benchmark_weight_backward(N=2, C=4, Cout=8, H=32, W=32, Kh=3, Kw=3, padding=1, dtype_name='float16', use_numpy=True)
     
-    print_header("WEIGHT BACKWARD (SMALL) - FP16")
-    benchmark_weight_backward(N=8, H=64, W=64, Kh=5, Kw=5, padding=2, dtype_name='float16', use_scipy=True)
+    print_header("WEIGHT BACKWARD (LARGE) (4D)")
+    benchmark_weight_backward(N=8, C=32, Cout=64, H=128, W=128, Kh=3, Kw=3, padding=1, dtype_name='float32', use_numpy=False)
+    benchmark_weight_backward(N=8, C=32, Cout=64, H=128, W=128, Kh=3, Kw=3, padding=1, dtype_name='float16', use_numpy=False)
     
-    # Weight Backward - Large (no SciPy, too slow)
-    print_header("WEIGHT BACKWARD (LARGE) - FP32")
-    benchmark_weight_backward(N=128, H=256, W=256, Kh=5, Kw=5, padding=2, dtype_name='float32', use_scipy=False)
+    print_header("RELU FORWARD (4D)")
+    benchmark_relu_forward()
     
-    print_header("WEIGHT BACKWARD (LARGE) - FP16")
-    benchmark_weight_backward(N=128, H=256, W=256, Kh=5, Kw=5, padding=2, dtype_name='float16', use_scipy=False)
+    print_header("RELU BACKWARD (4D)")
+    benchmark_relu_backward()
     
-    # ReLU Benchmarks
-    print_header("RELU FORWARD - FP32")
-    benchmark_relu_forward(size=(1024, 1024), dtype_name='float32')
-    
-    print_header("RELU BACKWARD - FP32")
-    benchmark_relu_backward(size=(1024, 1024), dtype_name='float32')
-    
-    # MaxPool2D Benchmarks
-    print_header("MAXPOOL2D FORWARD - FP32")
-    benchmark_maxpool2d(size=(512, 512), pool_size=2, dtype_name='float32')
+    print_header("MAXPOOL2D (2D fallback)")
+    benchmark_maxpool2d()
     
     print("\n" + "="*80)
     print(" BENCHMARK COMPLETE")
     print("="*80 + "\n")
-
-def benchmark_relu_forward(size=(1024, 1024), dtype_name='float32', num_runs=10):
-    """Benchmark ReLU forward pass."""
-    np_dtype = np.float32 if dtype_name == 'float32' else np.float16
-    
-    print(f"\n  Configuration:")
-    print(f"    Size:         {size[0]} x {size[1]}")
-    print(f"    Precision:    {dtype_name.upper()}")
-    print(f"    Runs:         {num_runs}")
-    
-    np.random.seed(42)
-    x = np.random.randn(*size).astype(np_dtype)
-    
-    # NumPy (CPU) - Ground Truth
-    times = []
-    for _ in range(num_runs):
-        start = time.perf_counter()
-        numpy_result = np.maximum(0, x)
-        times.append((time.perf_counter() - start) * 1000)
-    numpy_time = np.median(times)
-    
-    # PyTorch (GPU)
-    pt_time = None
-    if TORCH_AVAILABLE:
-        pt_dtype = torch.float32 if dtype_name == 'float32' else torch.float16
-        t_x = torch.from_numpy(x).cuda().to(pt_dtype)
-        
-        for _ in range(5):
-            _ = torch.relu(t_x)
-        torch.cuda.synchronize()
-        
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-        
-        times = []
-        for _ in range(num_runs):
-            start_event.record()
-            pt_result = torch.relu(t_x)
-            end_event.record()
-            torch.cuda.synchronize()
-            times.append(start_event.elapsed_time(end_event))
-        pt_time = np.median(times)
-    
-    # MacroTorch (GPU)
-    d_x = cuda.to_device(x)
-    d_out = cuda.device_array(x.shape, dtype=x.dtype)
-    
-    threads = 256
-    blocks = math.ceil(x.size / threads)
-    
-    for _ in range(5):
-        RELU_FORWARD[blocks, threads](d_x, d_out)
-    cuda.synchronize()
-    
-    if TORCH_AVAILABLE:
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-        
-        times = []
-        for _ in range(num_runs):
-            start_event.record()
-            RELU_FORWARD[blocks, threads](d_x, d_out)
-            end_event.record()
-            torch.cuda.synchronize()
-            times.append(start_event.elapsed_time(end_event))
-    else:
-        times = []
-        for _ in range(num_runs):
-            start = time.perf_counter()
-            RELU_FORWARD[blocks, threads](d_x, d_out)
-            cuda.synchronize()
-            times.append((time.perf_counter() - start) * 1000)
-    mt_time = np.median(times)
-    
-    mt_result = d_out.copy_to_host()
-    mt_error = np.abs(mt_result - numpy_result).max()
-    
-    # Results
-    print(f"\n  Results:")
-    print(f"  {'-'*60}")
-    print(f"  {'Implementation':<18} | {'Time (ms)':<12} | {'Speedup':<10} | {'Error':<12}")
-    print(f"  {'-'*60}")
-    print(f"  {'NumPy (CPU)':<18} | {numpy_time:<12.4f} | {'1.00x':<10} | {'Ground Truth':<12}")
-    if TORCH_AVAILABLE:
-        print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {f'{numpy_time/pt_time:.2f}x':<10} | {'~0':<12}")
-    print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {f'{numpy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}':<12}")
-    print(f"  {'-'*60}")
-    
-    if TORCH_AVAILABLE:
-        speedup = pt_time / mt_time
-        if speedup > 1:
-            print(f"\n  MacroTorch vs PyTorch: {speedup:.2f}x faster")
-        else:
-            print(f"\n  MacroTorch vs PyTorch: {1/speedup:.2f}x slower")
-
-
-def benchmark_relu_backward(size=(1024, 1024), dtype_name='float32', num_runs=10):
-    """Benchmark ReLU backward pass."""
-    from macrotorch.kernels import RELU_BACKWARD
-    
-    np_dtype = np.float32 if dtype_name == 'float32' else np.float16
-    
-    print(f"\n  Configuration:")
-    print(f"    Size:         {size[0]} x {size[1]}")
-    print(f"    Precision:    {dtype_name.upper()}")
-    print(f"    Runs:         {num_runs}")
-    
-    np.random.seed(42)
-    x = np.random.randn(*size).astype(np_dtype)
-    grad_out = np.ones_like(x)
-    
-    # NumPy (CPU) - Ground Truth
-    times = []
-    for _ in range(num_runs):
-        start = time.perf_counter()
-        numpy_result = grad_out * (x > 0).astype(np_dtype)
-        times.append((time.perf_counter() - start) * 1000)
-    numpy_time = np.median(times)
-    
-    # PyTorch (GPU)
-    pt_time = None
-    if TORCH_AVAILABLE:
-        pt_dtype = torch.float32 if dtype_name == 'float32' else torch.float16
-        t_x = torch.from_numpy(x).cuda().to(pt_dtype).requires_grad_(True)
-        t_out = torch.relu(t_x)
-        t_grad_out = torch.ones_like(t_out)
-        
-        for _ in range(5):
-            t_out.backward(t_grad_out, retain_graph=True)
-            t_x.grad = None
-        torch.cuda.synchronize()
-        
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-        
-        times = []
-        for _ in range(num_runs):
-            start_event.record()
-            t_out.backward(t_grad_out, retain_graph=True)
-            end_event.record()
-            torch.cuda.synchronize()
-            t_x.grad = None
-            times.append(start_event.elapsed_time(end_event))
-        pt_time = np.median(times)
-    
-    # MacroTorch (GPU)
-    d_x = cuda.to_device(x)
-    d_grad_out = cuda.to_device(grad_out)
-    d_grad_in = cuda.device_array(x.shape, dtype=np.float32)
-    
-    threads = 256
-    blocks = math.ceil(x.size / threads)
-    
-    for _ in range(5):
-        RELU_BACKWARD[blocks, threads](d_x, d_grad_out, d_grad_in)
-    cuda.synchronize()
-    
-    if TORCH_AVAILABLE:
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-        
-        times = []
-        for _ in range(num_runs):
-            start_event.record()
-            RELU_BACKWARD[blocks, threads](d_x, d_grad_out, d_grad_in)
-            end_event.record()
-            torch.cuda.synchronize()
-            times.append(start_event.elapsed_time(end_event))
-    else:
-        times = []
-        for _ in range(num_runs):
-            start = time.perf_counter()
-            RELU_BACKWARD[blocks, threads](d_x, d_grad_out, d_grad_in)
-            cuda.synchronize()
-            times.append((time.perf_counter() - start) * 1000)
-    mt_time = np.median(times)
-    
-    mt_result = d_grad_in.copy_to_host()
-    mt_error = np.abs(mt_result - numpy_result.astype(np.float32)).max()
-    
-    # Results
-    print(f"\n  Results:")
-    print(f"  {'-'*60}")
-    print(f"  {'Implementation':<18} | {'Time (ms)':<12} | {'Speedup':<10} | {'Error':<12}")
-    print(f"  {'-'*60}")
-    print(f"  {'NumPy (CPU)':<18} | {numpy_time:<12.4f} | {'1.00x':<10} | {'Ground Truth':<12}")
-    if TORCH_AVAILABLE:
-        print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {f'{numpy_time/pt_time:.2f}x':<10} | {'~0':<12}")
-    print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {f'{numpy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}':<12}")
-    print(f"  {'-'*60}")
-    
-    if TORCH_AVAILABLE:
-        speedup = pt_time / mt_time
-        if speedup > 1:
-            print(f"\n  MacroTorch vs PyTorch: {speedup:.2f}x faster")
-        else:
-            print(f"\n  MacroTorch vs PyTorch: {1/speedup:.2f}x slower")
-
-
-def benchmark_maxpool2d(size=(512, 512), pool_size=2, dtype_name='float32', num_runs=10):
-    """Benchmark MaxPool2D forward pass."""
-    np_dtype = np.float32 if dtype_name == 'float32' else np.float16
-    
-    print(f"\n  Configuration:")
-    print(f"    Size:         {size[0]} x {size[1]}")
-    print(f"    Pool Size:    {pool_size}")
-    print(f"    Precision:    {dtype_name.upper()}")
-    print(f"    Runs:         {num_runs}")
-    
-    np.random.seed(42)
-    x = np.random.randn(*size).astype(np_dtype)
-    out_H = size[0] // pool_size
-    out_W = size[1] // pool_size
-    
-    # NumPy (CPU) - Ground Truth
-    def numpy_maxpool(x, pool_size):
-        out_H = x.shape[0] // pool_size
-        out_W = x.shape[1] // pool_size
-        out = np.zeros((out_H, out_W), dtype=x.dtype)
-        for i in range(out_H):
-            for j in range(out_W):
-                out[i, j] = x[i*pool_size:(i+1)*pool_size, j*pool_size:(j+1)*pool_size].max()
-        return out
-    
-    times = []
-    for _ in range(num_runs):
-        start = time.perf_counter()
-        numpy_result = numpy_maxpool(x, pool_size)
-        times.append((time.perf_counter() - start) * 1000)
-    numpy_time = np.median(times)
-    
-    # PyTorch (GPU)
-    pt_time = None
-    if TORCH_AVAILABLE:
-        pt_dtype = torch.float32 if dtype_name == 'float32' else torch.float16
-        t_x = torch.from_numpy(x).cuda().to(pt_dtype).unsqueeze(0).unsqueeze(0)
-        
-        for _ in range(5):
-            _ = torch.nn.functional.max_pool2d(t_x, kernel_size=pool_size)
-        torch.cuda.synchronize()
-        
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-        
-        times = []
-        for _ in range(num_runs):
-            start_event.record()
-            pt_result = torch.nn.functional.max_pool2d(t_x, kernel_size=pool_size)
-            end_event.record()
-            torch.cuda.synchronize()
-            times.append(start_event.elapsed_time(end_event))
-        pt_time = np.median(times)
-    
-    # MacroTorch (GPU)
-    d_x = cuda.to_device(x)
-    d_out = cuda.device_array((out_H, out_W), dtype=np_dtype)
-    d_indices = cuda.device_array((out_H, out_W), dtype=np.int32)
-    
-    threads = (16, 16)
-    blocks = (math.ceil(out_W / 16), math.ceil(out_H / 16))
-    
-    for _ in range(5):
-        MAXPOOL2D_FORWARD[blocks, threads](d_x, d_out, d_indices, pool_size)
-    cuda.synchronize()
-    
-    if TORCH_AVAILABLE:
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-        
-        times = []
-        for _ in range(num_runs):
-            start_event.record()
-            MAXPOOL2D_FORWARD[blocks, threads](d_x, d_out, d_indices, pool_size)
-            end_event.record()
-            torch.cuda.synchronize()
-            times.append(start_event.elapsed_time(end_event))
-    else:
-        times = []
-        for _ in range(num_runs):
-            start = time.perf_counter()
-            MAXPOOL2D_FORWARD[blocks, threads](d_x, d_out, d_indices, pool_size)
-            cuda.synchronize()
-            times.append((time.perf_counter() - start) * 1000)
-    mt_time = np.median(times)
-    
-    mt_result = d_out.copy_to_host()
-    mt_error = np.abs(mt_result - numpy_result).max()
-    
-    # Results
-    print(f"\n  Results:")
-    print(f"  {'-'*60}")
-    print(f"  {'Implementation':<18} | {'Time (ms)':<12} | {'Speedup':<10} | {'Error':<12}")
-    print(f"  {'-'*60}")
-    print(f"  {'NumPy (CPU)':<18} | {numpy_time:<12.4f} | {'1.00x':<10} | {'Ground Truth':<12}")
-    if TORCH_AVAILABLE:
-        print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {f'{numpy_time/pt_time:.2f}x':<10} | {'~0':<12}")
-    print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {f'{numpy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}':<12}")
-    print(f"  {'-'*60}")
-    
-    if TORCH_AVAILABLE:
-        speedup = pt_time / mt_time
-        if speedup > 1:
-            print(f"\n  MacroTorch vs PyTorch: {speedup:.2f}x faster")
-        else:
-            print(f"\n  MacroTorch vs PyTorch: {1/speedup:.2f}x slower")
 
 
 if __name__ == "__main__":

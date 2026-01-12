@@ -4,14 +4,14 @@ from .ops import forward, input_backward, bias_backward
 
 class Conv2d:
     """
-    2D Convolution Layer with learnable weights and bias.
+    2D Convolution Layer with learnable weights and bias (Multi-Channel Batched).
     
     Parameters
     ----------
     in_channels : int
-        Number of input channels (currently supports 1).
+        Number of input channels.
     out_channels : int
-        Number of output channels (currently supports 1).
+        Number of output channels.
     kernel_size : int or tuple
         Size of the convolution kernel (Kh, Kw).
     padding : int, optional (default=0)
@@ -20,22 +20,6 @@ class Conv2d:
         If True, adds a learnable bias to the output.
     dtype : str, optional (default='fp32')
         Precision mode: 'fp32' or 'fp16'.
-    
-    Attributes
-    ----------
-    weight : numpy.ndarray
-        Learnable kernel weights of shape (Kh, Kw).
-    bias : numpy.ndarray or None
-        Learnable bias of shape (1,) or None if bias=False.
-    
-    Examples
-    --------
-    >>> import numpy as np
-    >>> from macrotorch import Conv2d
-    >>> 
-    >>> conv = Conv2d(1, 1, kernel_size=3, padding=1, bias=True)
-    >>> x = np.random.randn(28, 28).astype(np.float32)
-    >>> output = conv(x)
     """
     
     def __init__(self, in_channels, out_channels, kernel_size, padding=0, bias=True, dtype='fp32'):
@@ -52,7 +36,7 @@ class Conv2d:
         np_dtype = np.float16 if dtype == 'fp16' else np.float32
         
         scale = np.sqrt(2.0 / (in_channels * kernel_size[0] * kernel_size[1]))
-        self.weight = (np.random.randn(*kernel_size) * scale).astype(np_dtype)
+        self.weight = (np.random.randn(out_channels, in_channels, *kernel_size) * scale).astype(np_dtype)
         
         if bias:
             self.bias = np.zeros(out_channels, dtype=np_dtype)
@@ -73,16 +57,15 @@ class Conv2d:
         Parameters
         ----------
         x : numpy.ndarray
-            Input of shape (H, W).
+            Input of shape (N, Cin, H, W).
         
         Returns
         -------
         numpy.ndarray
-            Output of shape (H_out, W_out).
+            Output of shape (N, Cout, H_out, W_out).
         """
         self._last_input = x
-        bias_val = float(self.bias[0]) if self.use_bias else None
-        return forward(x, self.weight, padding=self.padding, bias=bias_val, dtype=self.dtype)
+        return forward(x, self.weight, padding=self.padding, bias=self.bias, dtype=self.dtype)
     
     def backward(self, grad_out):
         """
@@ -91,14 +74,20 @@ class Conv2d:
         Parameters
         ----------
         grad_out : numpy.ndarray
-            Gradient from next layer of shape (H_out, W_out).
+            Gradient from next layer of shape (N, Cout, H_out, W_out).
         
         Returns
         -------
         numpy.ndarray
-            Gradient with respect to input of shape (H_in, W_in).
+            Gradient with respect to input of shape (N, Cin, H_in, W_in).
         """
         grad_input = input_backward(grad_out, self.weight, padding=self.padding, dtype=self.dtype)
+        
+        # Compute gradients for parameters
+        self.grad_weight = weight_backward(grad_out, self._last_input, padding=self.padding, dtype=self.dtype)
+        if self.use_bias:
+            self.grad_bias = bias_backward(grad_out, dtype=self.dtype)
+            
         return grad_input
     
     def parameters(self):

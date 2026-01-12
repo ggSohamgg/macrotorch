@@ -6,38 +6,26 @@ from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIE
 
 def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=None , d_K=None , d_out=None):
     """
-    2D Convolution Forward Pass
-    
-    Computes the 2D convolution of input A with kernel K using custom CUDA kernels.
+    2D Convolution Forward Pass (Multi-Channel Batched)
     
     Parameters
     ----------
     A : numpy.ndarray
-        Input image/feature map of shape (H, W). Supports float32 or float16 dtype.
+        Input tensor of shape (N, C_in, H, W).
     K : numpy.ndarray
-        Convolution kernel/filter of shape (Kh, Kw). Must have same dtype as A.
-    padding : int, optional (default=0)
-        Number of pixels to pad on all sides of the input.
-    bias : float or None, optional (default=None)
-        Scalar bias value to add to each output element.
-    dtype : str, optional (default='auto')
-        Precision mode: 'fp32', 'fp16', or 'auto'.
-    verbose : bool, optional (default=False)
-        If True, prints kernel selection and execution details.
-    d_A, d_K, d_out : cuda device arrays, optional
-        Pre-allocated GPU memory for benchmarking.
-    
-    Returns
-    -------
-    numpy.ndarray
-        Convolution output of shape (out_h, out_w) in float32.
+        Kernel tensor of shape (C_out, C_in, Kh, Kw).
+    padding : int
+        Zero-padding added to both sides of the input.
+    bias : numpy.ndarray or None
+        Bias tensor of shape (C_out,).
     """
-    assert A.ndim == 2 , f"A must be 2D, got shape {A.shape}"
-    assert K.ndim == 2 , f"K must be 2D, got shape {K.shape}"
+    assert A.ndim == 4 , f"A must be 4D (N, C, H, W), got shape {A.shape}"
+    assert K.ndim == 4 , f"K must be 4D (Cout, Cin, Kh, Kw), got shape {K.shape}"
     
-    H , W = A.shape
-    Kh , Kw = K.shape
-    
+    N, Cin, H, W = A.shape
+    Cout, Cin_K, Kh, Kw = K.shape
+    assert Cin == Cin_K, f"Input channels {Cin} must match kernel in_channels {Cin_K}"
+
     if dtype == "auto":
         dtype = 'fp16' if A.dtype == np.float16 else 'fp32'
     
@@ -60,9 +48,7 @@ def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=Non
     
     if verbose:
         memory_type = "Shared Memory" if use_shared else "Direct Global"
-        shared_info = f"({config['shared_size']}×{config['shared_size']})" if use_shared else ""
-        print(f"Algorithm: {tier.upper()} ({dtype.upper()}) - {memory_type} {shared_info}")
-        print(f"Kernel: {Kh}×{Kw}, Block: {block_size}×{block_size}")
+        print(f"Algorithm: {tier.upper()} ({dtype.upper()}) - {memory_type}")
     
     out_h = H - Kh + 1 + (2 * padding)
     out_w = W - Kw + 1 + (2 * padding)
@@ -71,18 +57,23 @@ def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=Non
         d_A = cuda.to_device(A)
     if d_K is None:
         d_K = cuda.to_device(K)
+    
+    if bias is None:
+        bias = np.zeros(Cout, dtype=A.dtype)
+    d_bias = cuda.to_device(bias)
+
     if d_out is None:
-        out = np.zeros((out_h , out_w) , dtype=np.float32)
+        out = np.zeros((N, Cout, out_h , out_w) , dtype=np.float32)
         d_out = cuda.to_device(out)
     
     threads_per_block = (block_size , block_size)
     blocks_y = math.ceil(out_h / block_size)  
     blocks_x = math.ceil(out_w / block_size)  
-    blocks_per_grid = (blocks_x , blocks_y)  
+    blocks_z = N * Cout
+    blocks_per_grid = (blocks_x , blocks_y, blocks_z)  
     
     kernel = KERNELS[(tier , dtype)]
-    bias_val = float(bias) if bias is not None else 0.0
-    kernel[blocks_per_grid , threads_per_block](d_A , d_K , d_out, padding, bias_val)
+    kernel[blocks_per_grid , threads_per_block](d_A , d_K , d_out, padding, d_bias)
     
     cuda.synchronize()
     return d_out.copy_to_host()
@@ -90,39 +81,20 @@ def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=Non
 
 def input_backward(grad_out, K, padding=0, dtype='auto', verbose=False):
     """
-    2D Convolution Backward Pass (Input Gradient)
-    
-    Computes the gradient of the loss with respect to the input (∂L/∂A).
-    
-    Parameters
-    ----------
-    grad_out : numpy.ndarray
-        Gradient flowing back from the next layer, shape (H_out, W_out).
-    K : numpy.ndarray
-        Convolution kernel/filter of shape (Kh, Kw). Same kernel used in forward pass.
-    padding : int, optional (default=0)
-        Padding value used in the forward pass.
-    dtype : str, optional (default='auto')
-        Precision mode: 'fp32', 'fp16', or 'auto'.
-    verbose : bool, optional (default=False)
-        If True, prints kernel selection and execution details.
-    
-    Returns
-    -------
-    numpy.ndarray
-        Gradient with respect to input (grad_A) of shape (H_in, W_in) in float32.
+    2D Convolution Backward Pass (Input Gradient - Multi-Channel Batched)
     """
-    assert grad_out.ndim == 2
-    assert K.ndim == 2
+    assert grad_out.ndim == 4
+    assert K.ndim == 4
     
-    H_out, W_out = grad_out.shape
-    Kh, Kw = K.shape
+    N, Cout, out_h, out_w = grad_out.shape
+    Cout_K, Cin, Kh, Kw = K.shape
+    assert Cout == Cout_K
     
     if dtype == "auto":
         dtype = 'fp16' if grad_out.dtype == np.float16 else 'fp32'
         
-    H_in = H_out + Kh - 1 - (2 * padding)
-    W_in = W_out + Kw - 1 - (2 * padding)
+    H_in = out_h + Kh - 1 - (2 * padding)
+    W_in = out_w + Kw - 1 - (2 * padding)
     
     max_k = max(Kh, Kw)
     
@@ -140,10 +112,7 @@ def input_backward(grad_out, K, padding=0, dtype='auto', verbose=False):
     config = TIERS[tier]
     block_size = config['block_size']
     
-    if verbose:
-        print(f"BWD Algorithm: {tier.upper()} ({dtype.upper()})")
-
-    grad_A = np.zeros((H_in, W_in), dtype=np.float32)
+    grad_A = np.zeros((N, Cin, H_in, W_in), dtype=np.float32)
     
     d_grad_out = cuda.to_device(grad_out)
     d_K = cuda.to_device(K)
@@ -152,7 +121,8 @@ def input_backward(grad_out, K, padding=0, dtype='auto', verbose=False):
     threads_per_block = (block_size, block_size)
     blocks_y = math.ceil(H_in / block_size)
     blocks_x = math.ceil(W_in / block_size)
-    blocks_per_grid = (blocks_x, blocks_y)
+    blocks_z = N * Cin
+    blocks_per_grid = (blocks_x, blocks_y, blocks_z)
     
     kernel = BACKWARD_KERNELS[(tier, dtype)]
     kernel[blocks_per_grid, threads_per_block](d_grad_out, d_K, padding, d_grad_A)
@@ -163,64 +133,30 @@ def input_backward(grad_out, K, padding=0, dtype='auto', verbose=False):
 
 def weight_backward(grad_out, A, padding=0, dtype='auto', verbose=False, d_grad_out=None, d_A=None, d_grad_W=None):
     """
-    2D Convolution Backward Pass (Weight Gradient)
-
-    Computes the gradient of the loss with respect to the weights (∂L/∂W).
-    
-    Parameters
-    ----------
-    grad_out : numpy.ndarray
-        Gradient flowing back from the next layer. Shape (H_out, W_out) or (N, H_out, W_out).
-    A : numpy.ndarray
-        Input from forward pass. Shape (H_in, W_in) or (N, H_in, W_in).
-    padding : int, optional
-        Padding used in forward pass.
-    
-    Returns
-    -------
-    numpy.ndarray
-        Gradient with respect to weights (grad_W) of shape (Kh, Kw).
+    2D Convolution Backward Pass (Weight Gradient - Multi-Channel Batched)
     """
     if d_grad_out is None:
-        assert grad_out is not None
-        assert A is not None
+        assert grad_out.ndim == 4
+        assert A.ndim == 4
         
-        # Handle 2D inputs by reshaping to 3D (1, H, W)
-        if grad_out.ndim == 2:
-            grad_out_reshaped = grad_out.reshape(1, *grad_out.shape)
-        else:
-            grad_out_reshaped = grad_out
-            
-        if A.ndim == 2:
-            A_reshaped = A.reshape(1, *A.shape)
-        else:
-            A_reshaped = A
-            
         if dtype == 'auto':
             dtype = 'fp16' if grad_out.dtype == np.float16 else 'fp32'
             
-        d_grad_out = cuda.to_device(grad_out_reshaped)
-        d_A = cuda.to_device(A_reshaped)
-    else:
-        # Assuming d_grad_out and d_A are already in correct 3D shape if passed manually
-        # Need to infer shapes from device arrays to Calc Kh/Kw
-        pass
+        d_grad_out = cuda.to_device(grad_out)
+        d_A = cuda.to_device(A)
 
-    N, H_out, W_out = d_grad_out.shape
-    _, H_in, W_in = d_A.shape
+    N, Cout, H_out, W_out = d_grad_out.shape
+    _, Cin, H_in, W_in = d_A.shape
     
     Kh = H_in + 2 * padding - H_out + 1
     Kw = W_in + 2 * padding - W_out + 1
     
-    if verbose:
-        print(f"Weight Backward: Input {d_A.shape}, Grad {d_grad_out.shape} -> Kernel ({Kh}, {Kw})")
-
     if d_grad_W is None:
-        grad_W = np.zeros((Kh, Kw), dtype=np.float32)
+        grad_W = np.zeros((Cout, Cin, Kh, Kw), dtype=np.float32)
         d_grad_W = cuda.to_device(grad_W)
         return_host = True
     else:
-        cuda.to_device(np.zeros((Kh, Kw), dtype=np.float32), to=d_grad_W) # zero init
+        cuda.to_device(np.zeros((Cout, Cin, Kh, Kw), dtype=np.float32), to=d_grad_W) # zero init
         return_host = False
         
     # Grid Configuration
@@ -229,7 +165,7 @@ def weight_backward(grad_out, A, padding=0, dtype='auto', verbose=False, d_grad_
     threads_per_block = (TILE_W, TILE_H)
     blocks_x = math.ceil(W_out / TILE_W)
     blocks_y = math.ceil(H_out / TILE_H)
-    blocks_z = Kh * Kw # One z-layer per kernel element
+    blocks_z = Cout * Cin * Kh * Kw
     
     blocks_per_grid = (blocks_x, blocks_y, blocks_z)
     

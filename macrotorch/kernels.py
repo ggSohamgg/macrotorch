@@ -18,16 +18,19 @@ def make_conv2d_kernel(shared_size , dtype):
         ty = cuda.threadIdx.y
         bx = cuda.blockIdx.x
         by = cuda.blockIdx.y
+        bz = cuda.blockIdx.z # bz = n * Cout + c_out
 
-        BW = cuda.blockDim.x
-        BH = cuda.blockDim.y
+        BW, BH = cuda.blockDim.x, cuda.blockDim.y
+        
+        N, Cin, H, W = A.shape
+        Cout, _, Kh, Kw = K.shape
+        _, _, out_h, out_w = out.shape
+
+        n = bz // Cout
+        c_out = bz % Cout
 
         i = by * BH + ty  
         j = bx * BW + tx  
-
-        H , W = A.shape
-        Kh , Kw = K.shape
-        out_h , out_w = out.shape
 
         sh = cuda.shared.array((shared_size , shared_size) , dtype = dtype)
         sh_h = BH + Kh - 1
@@ -36,24 +39,31 @@ def make_conv2d_kernel(shared_size , dtype):
         base_i = by * BH - padding
         base_j = bx * BW - padding
 
-        for ii in range(ty , sh_h , BH):  
-            for jj in range(tx , sh_w , BW):  
-                global_i = base_i + ii
-                global_j = base_j + jj
-                if 0 <= global_i < H and 0 <= global_j < W:
-                    sh[ii , jj] = A[global_i , global_j]
-                else:
-                    sh[ii , jj] = dtype(0.0)
+        s = float32(0.0)
         
-        cuda.syncthreads()
+        for c_in in range(Cin):
+            # Load A[n, c_in, ...] tile to shared memory
+            for ii in range(ty , sh_h , BH):  
+                for jj in range(tx , sh_w , BW):  
+                    global_i = base_i + ii
+                    global_j = base_j + jj
+                    if 0 <= global_i < H and 0 <= global_j < W:
+                        sh[ii , jj] = A[n, c_in, global_i , global_j]
+                    else:
+                        sh[ii , jj] = dtype(0.0)
+            
+            cuda.syncthreads()
+
+            if i < out_h and j < out_w:
+                for u in range(Kh):
+                    for v in range(Kw):
+                        s += float32(sh[ty + u , tx + v]) * float32(K[c_out, c_in, u , v])  
+            
+            cuda.syncthreads()
 
         if i < out_h and j < out_w:
-            s = float32(0.0)
-            for u in range(Kh):
-                for v in range(Kw):
-                    s += float32(sh[ty + u , tx + v]) * float32(K[u , v])  
-            s += float32(bias)
-            out[i , j] = s
+            s += float32(bias[c_out])
+            out[n, c_out, i , j] = s
     
     return conv2d_kernel
 
@@ -63,21 +73,26 @@ def make_conv2d_direct(dtype):
     def conv2d_direct(A , K , out, padding , bias):
         i = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y  
         j = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x  
-        
-        out_h , out_w = out.shape
-        Kh , Kw = K.shape
-        H, W = A.shape
+        bz = cuda.blockIdx.z # n * Cout + c_out
+
+        N, Cin, H, W = A.shape
+        Cout, _, Kh, Kw = K.shape
+        _, _, out_h, out_w = out.shape
+
+        n = bz // Cout
+        c_out = bz % Cout
 
         if i < out_h and j < out_w:
             s = float32(0.0)
-            for u in range(Kh):
-                for v in range(Kw):
-                    in_row = i - padding + u
-                    in_col = j - padding + v
-                    if 0 <= in_row < H and 0 <= in_col < W:
-                        s += float32(A[in_row , in_col]) * float32(K[u , v])
-            s += float32(bias)
-            out[i , j] = s
+            for c_in in range(Cin):
+                for u in range(Kh):
+                    for v in range(Kw):
+                        in_row = i - padding + u
+                        in_col = j - padding + v
+                        if 0 <= in_row < H and 0 <= in_col < W:
+                            s += float32(A[n, c_in, in_row , in_col]) * float32(K[c_out, c_in, u , v])
+            s += float32(bias[c_out])
+            out[n, c_out, i , j] = s
     
     return conv2d_direct
 
@@ -91,14 +106,18 @@ def make_conv2d_backward_shared(shared_size, dtype):
     def conv2d_backward_input_shared(grad_out, K, padding, grad_A):
         tx, ty = cuda.threadIdx.x, cuda.threadIdx.y
         bx, by = cuda.blockIdx.x, cuda.blockIdx.y
+        bz = cuda.blockIdx.z # n * Cin + c_in
         BW, BH = cuda.blockDim.x, cuda.blockDim.y
         
+        N, Cout, out_h, out_w = grad_out.shape
+        _, Cin, Kh, Kw = K.shape
+        _, _, H, W = grad_A.shape
+
+        n = bz // Cin
+        c_in = bz % Cin
+
         i = by * BH + ty
         j = bx * BW + tx
-        
-        H, W = grad_A.shape
-        Kh, Kw = K.shape
-        out_h, out_w = grad_out.shape
         
         sh = cuda.shared.array((shared_size, shared_size), dtype=dtype)
         
@@ -108,24 +127,30 @@ def make_conv2d_backward_shared(shared_size, dtype):
         sh_h = BH + Kh - 1
         sh_w = BW + Kw - 1
         
-        for ii in range(ty, sh_h, BH):
-            for jj in range(tx, sh_w, BW):
-                gr, gc = base_i + ii, base_j + jj
-                if 0 <= gr < out_h and 0 <= gc < out_w:
-                    sh[ii, jj] = grad_out[gr, gc]
-                else:
-                    sh[ii, jj] = dtype(0.0)
-        
-        cuda.syncthreads()
-        
+        s = float32(0.0)
+
+        for c_out in range(Cout):
+            for ii in range(ty, sh_h, BH):
+                for jj in range(tx, sh_w, BW):
+                    gr, gc = base_i + ii, base_j + jj
+                    if 0 <= gr < out_h and 0 <= gc < out_w:
+                        sh[ii, jj] = grad_out[n, c_out, gr, gc]
+                    else:
+                        sh[ii, jj] = dtype(0.0)
+            
+            cuda.syncthreads()
+            
+            if i < H and j < W:
+                for u in range(Kh):
+                    for v in range(Kw):
+                        sh_val = float32(sh[ty + (Kh - 1 - u), tx + (Kw - 1 - v)])
+                        k_val = float32(K[c_out, c_in, u, v])
+                        s += sh_val * k_val
+            
+            cuda.syncthreads()
+
         if i < H and j < W:
-            s = float32(0.0)
-            for u in range(Kh):
-                for v in range(Kw):
-                    sh_val = float32(sh[ty + (Kh - 1 - u), tx + (Kw - 1 - v)])
-                    k_val = float32(K[u, v])
-                    s += sh_val * k_val
-            grad_A[i, j] = s
+            grad_A[n, c_in, i, j] = s
 
     return conv2d_backward_input_shared
 
@@ -134,19 +159,25 @@ def make_conv2d_backward_global(dtype):
     @cuda.jit
     def conv2d_backward_input_global(grad_out, K, padding, grad_A):
         i, j = cuda.grid(2)
-        H, W = grad_A.shape
-        Kh, Kw = K.shape
-        out_h, out_w = grad_out.shape
+        bz = cuda.blockIdx.z # n * Cin + c_in
         
+        N, Cout, out_h, out_w = grad_out.shape
+        _, Cin, Kh, Kw = K.shape
+        _, _, H, W = grad_A.shape
+
+        n = bz // Cin
+        c_in = bz % Cin
+
         if i < H and j < W:
             s = float32(0.0)
-            for u in range(Kh):
-                for v in range(Kw):
-                    out_r = i + padding - u
-                    out_c = j + padding - v
-                    if 0 <= out_r < out_h and 0 <= out_c < out_w:
-                       s += float32(grad_out[out_r, out_c]) * float32(K[u, v])
-            grad_A[i, j] = s
+            for c_out in range(Cout):
+                for u in range(Kh):
+                    for v in range(Kw):
+                        out_r = i + padding - u
+                        out_c = j + padding - v
+                        if 0 <= out_r < out_h and 0 <= out_c < out_w:
+                           s += float32(grad_out[n, c_out, out_r, out_c]) * float32(K[c_out, c_in, u, v])
+            grad_A[n, c_in, i, j] = s
 
     return conv2d_backward_input_global
 
@@ -198,12 +229,17 @@ def conv2d_backward_weight_shared(input, grad_out, padding, grad_W):
     i = by * TILE_H + ty
     j = bx * TILE_W + tx
 
-    Kh, Kw = grad_W.shape
-    u = bz // Kw
-    v = bz % Kw
+    Cout, Cin, Kh, Kw = grad_W.shape
+    
+    c_out = bz // (Cin * Kh * Kw)
+    rem = bz % (Cin * Kh * Kw)
+    c_in = rem // (Kh * Kw)
+    rem2 = rem % (Kh * Kw)
+    u = rem2 // Kw
+    v = rem2 % Kw
 
-    N, H_out, W_out = grad_out.shape
-    _, H_in, W_in = input.shape
+    N, _, H_out, W_out = grad_out.shape
+    _, _, H_in, W_in = input.shape
     
     s_partial = cuda.shared.array(256, dtype=float32)
     s = float32(0.0)
@@ -214,7 +250,7 @@ def conv2d_backward_weight_shared(input, grad_out, padding, grad_W):
         
         if 0 <= in_row < H_in and 0 <= in_col < W_in:
             for n in range(N):
-                s += float32(grad_out[n, i, j]) * float32(input[n, in_row, in_col])
+                s += float32(grad_out[n, c_out, i, j]) * float32(input[n, c_in, in_row, in_col])
     
     s_partial[LINEAR_TID] = s
     cuda.syncthreads()
@@ -227,7 +263,7 @@ def conv2d_backward_weight_shared(input, grad_out, padding, grad_W):
         stride //= 2
     
     if LINEAR_TID == 0:
-        cuda.atomic.add(grad_W, (u, v), s_partial[0])
+        cuda.atomic.add(grad_W, (c_out, c_in, u, v), s_partial[0])
 
 @cuda.jit
 def relu_forward(x, out):

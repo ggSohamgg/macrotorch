@@ -567,19 +567,12 @@ def main():
     print_header("WEIGHT BACKWARD (SMALL) - FP16")
     benchmark_weight_backward(N=2, C=4, Cout=8, H=32, W=32, Kh=3, Kw=3, padding=1, dtype_name='float16', use_scipy=True)
     
-    # Weight Backward - Medium (with SciPy validation)
-    print_header("WEIGHT BACKWARD (MEDIUM) - FP32")
-    benchmark_weight_backward(N=4, C=8, Cout=16, H=64, W=64, Kh=3, Kw=3, padding=1, dtype_name='float32', use_scipy=True)
-
-    print_header("WEIGHT BACKWARD (MEDIUM) - FP16")
-    benchmark_weight_backward(N=4, C=8, Cout=16, H=64, W=64, Kh=3, Kw=3, padding=1, dtype_name='float16', use_scipy=True)
-    
-    # Weight Backward - Large (no SciPy, too slow)
+    # Weight Backward - Large (with SciPy validation)
     print_header("WEIGHT BACKWARD (LARGE) - FP32")
-    benchmark_weight_backward(N=8, C=32, Cout=64, H=128, W=128, Kh=3, Kw=3, padding=1, dtype_name='float32', use_scipy=False)
+    benchmark_weight_backward(N=8, C=32, Cout=64, H=128, W=128, Kh=3, Kw=3, padding=1, dtype_name='float32', use_scipy=True)
     
     print_header("WEIGHT BACKWARD (LARGE) - FP16")
-    benchmark_weight_backward(N=8, C=32, Cout=64, H=128, W=128, Kh=3, Kw=3, padding=1, dtype_name='float16', use_scipy=False)
+    benchmark_weight_backward(N=8, C=32, Cout=64, H=128, W=128, Kh=3, Kw=3, padding=1, dtype_name='float16', use_scipy=True)
     
     # ReLU Benchmarks
     print_header("RELU FORWARD - FP32")

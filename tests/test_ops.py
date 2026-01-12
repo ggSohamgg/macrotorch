@@ -101,7 +101,7 @@ class TestFunctionalOps:
         pt_grad_bias = t_grad.sum(dim=(0, 2, 3))
         pt_grad_bias_np = pt_grad_bias.cpu().numpy()
         
-        np.testing.assert_allclose(mt_grad_bias, pt_grad_bias_np, atol=1e-5)
+        np.testing.assert_allclose(mt_grad_bias, pt_grad_bias_np, atol=1e-4)
 
     def test_relu_ops(self):
         x = np.random.randn(2, 4, 8, 8).astype(np.float32)

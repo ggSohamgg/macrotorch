@@ -231,39 +231,43 @@ def conv2d_backward_weight_shared(input, grad_out, padding, grad_W):
 
     Cout, Cin, Kh, Kw = grad_W.shape
     
-    c_out = bz // (Cin * Kh * Kw)
-    rem = bz % (Cin * Kh * Kw)
-    c_in = rem // (Kh * Kw)
-    rem2 = rem % (Kh * Kw)
-    u = rem2 // Kw
-    v = rem2 % Kw
+    # bz = c_out * Cin + c_in
+    c_out = bz // Cin
+    c_in = bz % Cin
 
     N, _, H_out, W_out = grad_out.shape
     _, _, H_in, W_in = input.shape
     
+    # Shared memory for reduction
     s_partial = cuda.shared.array(256, dtype=float32)
-    s = float32(0.0)
-    
-    if i < H_out and j < W_out:
-        in_row = i + u - padding
-        in_col = j + v - padding
-        
-        if 0 <= in_row < H_in and 0 <= in_col < W_in:
-            for n in range(N):
-                s += float32(grad_out[n, c_out, i, j]) * float32(input[n, c_in, in_row, in_col])
-    
-    s_partial[LINEAR_TID] = s
-    cuda.syncthreads()
-    
-    stride = 128
-    while stride > 0:
-        if LINEAR_TID < stride:
-            s_partial[LINEAR_TID] += s_partial[LINEAR_TID + stride]
-        cuda.syncthreads()
-        stride //= 2
-    
-    if LINEAR_TID == 0:
-        cuda.atomic.add(grad_W, (c_out, c_in, u, v), s_partial[0])
+
+    for u in range(Kh):
+        for v in range(Kw):
+            s = float32(0.0)
+            if i < H_out and j < W_out:
+                in_row = i + u - padding
+                in_col = j + v - padding
+                
+                if 0 <= in_row < H_in and 0 <= in_col < W_in:
+                    for n in range(N):
+                        s += float32(grad_out[n, c_out, i, j]) * float32(input[n, c_in, in_row, in_col])
+            
+            # Reduce across threads in block
+            s_partial[LINEAR_TID] = s
+            cuda.syncthreads()
+            
+            stride = 128
+            while stride > 0:
+                if LINEAR_TID < stride:
+                    s_partial[LINEAR_TID] += s_partial[LINEAR_TID + stride]
+                cuda.syncthreads()
+                stride //= 2
+            
+            if LINEAR_TID == 0:
+                cuda.atomic.add(grad_W, (c_out, c_in, u, v), s_partial[0])
+            
+            # Wait for all threads before next u,v
+            cuda.syncthreads()
 
 @cuda.jit
 def relu_forward(x, out):

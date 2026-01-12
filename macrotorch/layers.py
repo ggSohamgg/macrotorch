@@ -43,8 +43,13 @@ class Conv2d:
         else:
             self.bias = None
         
-        self.grad_weight = None
-        self.grad_bias = None
+        # Initialize gradients to zeros of correct shape
+        self.grad_weight = np.zeros(self.weight.shape, dtype=np.float32)
+        if bias:
+            self.grad_bias = np.zeros(out_channels, dtype=np.float32)
+        else:
+            self.grad_bias = None
+            
         self._last_input = None
     
     def __call__(self, x):
@@ -67,7 +72,7 @@ class Conv2d:
         self._last_input = x
         return forward(x, self.weight, padding=self.padding, bias=self.bias, dtype=self.dtype)
     
-    def backward(self, grad_out):
+    def backward(self, grad_out, x=None):
         """
         Backward pass of the convolution.
         
@@ -84,7 +89,8 @@ class Conv2d:
         grad_input = input_backward(grad_out, self.weight, padding=self.padding, dtype=self.dtype)
         
         # Compute gradients for parameters
-        self.grad_weight = weight_backward(grad_out, self._last_input, padding=self.padding, dtype=self.dtype)
+        input_for_grad = x if x is not None else self._last_input
+        self.grad_weight = weight_backward(grad_out, input_for_grad, padding=self.padding, dtype=self.dtype)
         if self.use_bias:
             self.grad_bias = bias_backward(grad_out, dtype=self.dtype)
             

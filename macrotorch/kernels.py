@@ -241,14 +241,22 @@ def conv2d_backward_weight_shared(input, grad_out, padding, grad_W):
     # Shared memory for reduction
     s_partial = cuda.shared.array(256, dtype=float32)
 
+    # Optimization: Iterate over kernel dimensions
     for u in range(Kh):
         for v in range(Kw):
             s = float32(0.0)
+            
+            # Spatial accumulation for this thread
             if i < H_out and j < W_out:
                 in_row = i + u - padding
                 in_col = j + v - padding
                 
                 if 0 <= in_row < H_in and 0 <= in_col < W_in:
+                    # Loop over batch
+                    # Note: We keep N inside u,v loop for now to avoid storing 
+                    # many partial sums in registers, but we can optimize this 
+                    # further if needed. However, the biggest gain is from 
+                    # reduced grid size and better occupancy.
                     for n in range(N):
                         s += float32(grad_out[n, c_out, i, j]) * float32(input[n, c_in, in_row, in_col])
             
@@ -266,7 +274,7 @@ def conv2d_backward_weight_shared(input, grad_out, padding, grad_W):
             if LINEAR_TID == 0:
                 cuda.atomic.add(grad_W, (c_out, c_in, u, v), s_partial[0])
             
-            # Wait for all threads before next u,v
+            # Sync before next kernel position to prevent s_partial corruption
             cuda.syncthreads()
 
 @cuda.jit

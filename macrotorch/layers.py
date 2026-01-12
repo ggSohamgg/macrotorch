@@ -103,9 +103,11 @@ class Conv2d:
         return [self.weight]
     
     def zero_grad(self):
-        """Resets gradients to None."""
-        self.grad_weight = None
-        self.grad_bias = None
+        """Resets gradients to zeros."""
+        if self.grad_weight is not None:
+            self.grad_weight.fill(0.0)
+        if self.grad_bias is not None:
+            self.grad_bias.fill(0.0)
     
     def __repr__(self):
         return (f"Conv2d(in_channels={self.in_channels}, out_channels={self.out_channels}, "

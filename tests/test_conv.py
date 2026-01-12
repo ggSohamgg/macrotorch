@@ -334,5 +334,73 @@ class TestReLU:
         np.testing.assert_allclose(grad_in, expected, rtol=1e-5)
 
 
+@pytest.mark.gpu
+class TestMaxPool2D:
+    """Tests for MaxPool2D operation."""
+    
+    def test_maxpool2d_shape(self):
+        """Test output shape is correct."""
+        from macrotorch import maxpool2d_forward
+        
+        x = np.random.randn(64, 64).astype(np.float32)
+        out, indices = maxpool2d_forward(x, pool_size=2)
+        
+        assert out.shape == (32, 32)
+        assert indices.shape == (32, 32)
+    
+    def test_maxpool2d_values(self):
+        """Test max values are correct."""
+        from macrotorch import maxpool2d_forward
+        
+        # Simple 4x4 input with known values
+        x = np.array([
+            [1, 2, 3, 4],
+            [5, 6, 7, 8],
+            [9, 10, 11, 12],
+            [13, 14, 15, 16]
+        ], dtype=np.float32)
+        
+        out, indices = maxpool2d_forward(x, pool_size=2)
+        
+        # Expected: max of each 2x2 block
+        expected = np.array([
+            [6, 8],
+            [14, 16]
+        ], dtype=np.float32)
+        
+        np.testing.assert_allclose(out, expected, rtol=1e-5)
+    
+    def test_maxpool2d_indices(self):
+        """Test max indices are correct."""
+        from macrotorch import maxpool2d_forward
+        
+        x = np.array([
+            [1, 2, 3, 4],
+            [5, 6, 7, 8],
+            [9, 10, 11, 12],
+            [13, 14, 15, 16]
+        ], dtype=np.float32)
+        
+        out, indices = maxpool2d_forward(x, pool_size=2)
+        
+        # Index 3 = position (1,1) in 2x2 block (bottom-right)
+        expected_indices = np.array([
+            [3, 3],
+            [3, 3]
+        ], dtype=np.int32)
+        
+        np.testing.assert_array_equal(indices, expected_indices)
+    
+    def test_maxpool2d_pool4(self):
+        """Test with pool_size=4."""
+        from macrotorch import maxpool2d_forward
+        
+        np.random.seed(42)
+        x = np.random.randn(64, 64).astype(np.float32)
+        out, indices = maxpool2d_forward(x, pool_size=4)
+        
+        assert out.shape == (16, 16)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

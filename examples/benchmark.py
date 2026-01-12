@@ -19,8 +19,8 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
-from macrotorch import conv2d_forward, conv2d_input_backward, conv2d_bias_backward, conv2d_weight_backward, Conv2d, relu
-from macrotorch.kernels import WEIGHT_KERNEL, RELU_FORWARD
+from macrotorch import conv2d_forward, conv2d_input_backward, conv2d_bias_backward, conv2d_weight_backward, Conv2d, relu, maxpool2d_forward
+from macrotorch.kernels import WEIGHT_KERNEL, RELU_FORWARD, MAXPOOL2D_FORWARD
 import math
 
 
@@ -545,6 +545,10 @@ def main():
     print_header("RELU BACKWARD - FP32")
     benchmark_relu_backward(size=(1024, 1024), dtype_name='float32')
     
+    # MaxPool2D Benchmarks
+    print_header("MAXPOOL2D FORWARD - FP32")
+    benchmark_maxpool2d(size=(512, 512), pool_size=2, dtype_name='float32')
+    
     print("\n" + "="*80)
     print(" BENCHMARK COMPLETE")
     print("="*80 + "\n")
@@ -727,6 +731,114 @@ def benchmark_relu_backward(size=(1024, 1024), dtype_name='float32', num_runs=10
     
     mt_result = d_grad_in.copy_to_host()
     mt_error = np.abs(mt_result - numpy_result.astype(np.float32)).max()
+    
+    # Results
+    print(f"\n  Results:")
+    print(f"  {'-'*60}")
+    print(f"  {'Implementation':<18} | {'Time (ms)':<12} | {'Speedup':<10} | {'Error':<12}")
+    print(f"  {'-'*60}")
+    print(f"  {'NumPy (CPU)':<18} | {numpy_time:<12.4f} | {'1.00x':<10} | {'Ground Truth':<12}")
+    if TORCH_AVAILABLE:
+        print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {f'{numpy_time/pt_time:.2f}x':<10} | {'~0':<12}")
+    print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {f'{numpy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}':<12}")
+    print(f"  {'-'*60}")
+    
+    if TORCH_AVAILABLE:
+        speedup = pt_time / mt_time
+        if speedup > 1:
+            print(f"\n  MacroTorch vs PyTorch: {speedup:.2f}x faster")
+        else:
+            print(f"\n  MacroTorch vs PyTorch: {1/speedup:.2f}x slower")
+
+
+def benchmark_maxpool2d(size=(512, 512), pool_size=2, dtype_name='float32', num_runs=10):
+    """Benchmark MaxPool2D forward pass."""
+    np_dtype = np.float32 if dtype_name == 'float32' else np.float16
+    
+    print(f"\n  Configuration:")
+    print(f"    Size:         {size[0]} x {size[1]}")
+    print(f"    Pool Size:    {pool_size}")
+    print(f"    Precision:    {dtype_name.upper()}")
+    print(f"    Runs:         {num_runs}")
+    
+    np.random.seed(42)
+    x = np.random.randn(*size).astype(np_dtype)
+    out_H = size[0] // pool_size
+    out_W = size[1] // pool_size
+    
+    # NumPy (CPU) - Ground Truth
+    def numpy_maxpool(x, pool_size):
+        out_H = x.shape[0] // pool_size
+        out_W = x.shape[1] // pool_size
+        out = np.zeros((out_H, out_W), dtype=x.dtype)
+        for i in range(out_H):
+            for j in range(out_W):
+                out[i, j] = x[i*pool_size:(i+1)*pool_size, j*pool_size:(j+1)*pool_size].max()
+        return out
+    
+    times = []
+    for _ in range(num_runs):
+        start = time.perf_counter()
+        numpy_result = numpy_maxpool(x, pool_size)
+        times.append((time.perf_counter() - start) * 1000)
+    numpy_time = np.median(times)
+    
+    # PyTorch (GPU)
+    pt_time = None
+    if TORCH_AVAILABLE:
+        pt_dtype = torch.float32 if dtype_name == 'float32' else torch.float16
+        t_x = torch.from_numpy(x).cuda().to(pt_dtype).unsqueeze(0).unsqueeze(0)
+        
+        for _ in range(5):
+            _ = torch.nn.functional.max_pool2d(t_x, kernel_size=pool_size)
+        torch.cuda.synchronize()
+        
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        times = []
+        for _ in range(num_runs):
+            start_event.record()
+            pt_result = torch.nn.functional.max_pool2d(t_x, kernel_size=pool_size)
+            end_event.record()
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))
+        pt_time = np.median(times)
+    
+    # MacroTorch (GPU)
+    d_x = cuda.to_device(x)
+    d_out = cuda.device_array((out_H, out_W), dtype=np_dtype)
+    d_indices = cuda.device_array((out_H, out_W), dtype=np.int32)
+    
+    threads = (16, 16)
+    blocks = (math.ceil(out_W / 16), math.ceil(out_H / 16))
+    
+    for _ in range(5):
+        MAXPOOL2D_FORWARD[blocks, threads](d_x, d_out, d_indices, pool_size)
+    cuda.synchronize()
+    
+    if TORCH_AVAILABLE:
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        times = []
+        for _ in range(num_runs):
+            start_event.record()
+            MAXPOOL2D_FORWARD[blocks, threads](d_x, d_out, d_indices, pool_size)
+            end_event.record()
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))
+    else:
+        times = []
+        for _ in range(num_runs):
+            start = time.perf_counter()
+            MAXPOOL2D_FORWARD[blocks, threads](d_x, d_out, d_indices, pool_size)
+            cuda.synchronize()
+            times.append((time.perf_counter() - start) * 1000)
+    mt_time = np.median(times)
+    
+    mt_result = d_out.copy_to_host()
+    mt_error = np.abs(mt_result - numpy_result).max()
     
     # Results
     print(f"\n  Results:")

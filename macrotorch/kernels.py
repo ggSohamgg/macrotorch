@@ -235,12 +235,30 @@ def relu_forward(x, out):
     if i < x.size:
         out.flat[i] = max(x.flat[i], 0.0)
 
-
 @cuda.jit
 def relu_backward(x, grad_out, grad_in):
     i = cuda.grid(1)
     if i < x.size:
         grad_in.flat[i] = grad_out.flat[i] if x.flat[i] > 0 else 0.0
+
+@cuda.jit
+def maxpool2d_forward(x , out , indices , pool_size):
+    i, j = cuda.grid(2) 
+    out_H, out_W = out.shape
+    if i < out_H and j < out_W:
+        base_i = i * pool_size  
+        base_j = j * pool_size  
+        max_val = x[base_i, base_j] 
+        max_idx = 0
+        
+        for u in range(pool_size):
+            for v in range(pool_size):
+                temp = x[base_i + u, base_j + v]  
+                if temp > max_val:
+                    max_val = temp
+                    max_idx = u * pool_size + v
+        out[i, j] = max_val
+        indices[i, j] = max_idx
 
 # =============================================================================
 # KERNEL REGISTRY AND TIER CONFIG
@@ -275,3 +293,4 @@ BIAS_KERNEL = conv2d_backward_bias
 WEIGHT_KERNEL = conv2d_backward_weight_shared
 RELU_FORWARD = relu_forward
 RELU_BACKWARD = relu_backward
+MAXPOOL2D_FORWARD = maxpool2d_forward

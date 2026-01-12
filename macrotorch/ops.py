@@ -1,7 +1,7 @@
 import numpy as np
 import math
 from numba import cuda
-from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD
+from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD, MAXPOOL2D_FORWARD
 
 
 def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=None , d_K=None , d_out=None):
@@ -393,3 +393,56 @@ def relu_backward(x, grad_out, d_x=None, d_grad_out=None, d_grad_in=None):
         return d_grad_in.copy_to_host()
     else:
         return d_grad_in
+
+
+def maxpool2d_forward(x, pool_size=2, d_x=None, d_out=None, d_indices=None):
+    """
+    MaxPool2D Forward Pass
+    
+    Computes max pooling over 2D input.
+    
+    Parameters
+    ----------
+    x : numpy.ndarray
+        Input array of shape (H, W)
+    pool_size : int
+        Size of pooling window (default: 2)
+    d_x : numba.cuda.DeviceNDArray, optional
+        Pre-allocated device input array
+    d_out : numba.cuda.DeviceNDArray, optional
+        Pre-allocated device output array
+    d_indices : numba.cuda.DeviceNDArray, optional
+        Pre-allocated device indices array
+        
+    Returns
+    -------
+    tuple(numpy.ndarray, numpy.ndarray) or tuple(DeviceNDArray, DeviceNDArray)
+        (output, indices) - pooled output and max indices for backward pass
+    """
+    H, W = x.shape
+    out_H = H // pool_size
+    out_W = W // pool_size
+    
+    if d_x is None:
+        d_x = cuda.to_device(x)
+        return_host = True
+    else:
+        return_host = False
+    
+    if d_out is None:
+        d_out = cuda.device_array((out_H, out_W), dtype=x.dtype)
+    
+    if d_indices is None:
+        d_indices = cuda.device_array((out_H, out_W), dtype=np.int32)
+    
+    # 2D grid configuration
+    threads = (16, 16)
+    blocks = (math.ceil(out_W / 16), math.ceil(out_H / 16))
+    
+    MAXPOOL2D_FORWARD[blocks, threads](d_x, d_out, d_indices, pool_size)
+    cuda.synchronize()
+    
+    if return_host:
+        return d_out.copy_to_host(), d_indices.copy_to_host()
+    else:
+        return d_out, d_indices

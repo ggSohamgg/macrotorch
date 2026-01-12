@@ -278,6 +278,49 @@ def conv2d_backward_weight_shared(input, grad_out, padding, grad_W):
             cuda.syncthreads()
 
 @cuda.jit
+def conv2d_backward_weight_shared_2dchannel(input, grad_out, padding, grad_W):
+    tx, ty = cuda.threadIdx.x, cuda.threadIdx.y
+    bx, by, bz = cuda.blockIdx.x, cuda.blockIdx.y, cuda.blockIdx.z
+
+    TILE_H = 16
+    TILE_W = 16
+    LINEAR_TID = ty * TILE_W + tx
+
+    i = by * TILE_H + ty
+    j = bx * TILE_W + tx
+
+    Kh, Kw = grad_W.shape
+    u = bz // Kw
+    v = bz % Kw
+
+    N, H_out, W_out = grad_out.shape
+    _, H_in, W_in = input.shape
+    
+    s_partial = cuda.shared.array(256, dtype=float32)
+    s = float32(0.0)
+    
+    if i < H_out and j < W_out:
+        in_row = i + u - padding
+        in_col = j + v - padding
+        
+        if 0 <= in_row < H_in and 0 <= in_col < W_in:
+            for n in range(N):
+                s += float32(grad_out[n, i, j]) * float32(input[n, in_row, in_col])
+    
+    s_partial[LINEAR_TID] = s
+    cuda.syncthreads()
+    
+    stride = 128
+    while stride > 0:
+        if LINEAR_TID < stride:
+            s_partial[LINEAR_TID] += s_partial[LINEAR_TID + stride]
+        cuda.syncthreads()
+        stride //= 2
+    
+    if LINEAR_TID == 0:
+        cuda.atomic.add(grad_W, (u, v), s_partial[0])
+
+@cuda.jit
 def relu_forward(x, out):
     i = cuda.grid(1)
     if i < x.size:
@@ -341,4 +384,6 @@ BIAS_KERNEL = conv2d_backward_bias
 WEIGHT_KERNEL = conv2d_backward_weight_shared
 RELU_FORWARD = relu_forward
 RELU_BACKWARD = relu_backward
+RELU_BACKWARD = relu_backward
 MAXPOOL2D_FORWARD = maxpool2d_forward
+WEIGHT_KERNEL_2D_LEGACY = conv2d_backward_weight_shared_2dchannel

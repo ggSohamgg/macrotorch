@@ -528,7 +528,66 @@ def benchmark_weight_backward(N, C, Cout, H, W, Kh, Kw, padding, dtype_name='flo
         print(f"\n  MacroTorch vs PyTorch: {pt_time/mt_time:.2f}x {'faster' if pt_time > mt_time else 'slower'}")
 
 
-def main():
+def benchmark_weight_backward_2d_legacy(N, H, W, Kh, Kw, padding, dtype_name='float32', num_runs=10):
+    """Benchmark the 2D-only weight backward kernel (N, H, W) input."""
+    from macrotorch.kernels import WEIGHT_KERNEL_2D_LEGACY
+    
+    np_dtype = np.float32 if dtype_name == 'float32' else np.float16
+    
+    print(f"\n  Configuration:")
+    print(f"    Batch:        {N}")
+    print(f"    Input:        {H} x {W}")
+    print(f"    Kernel Size:  {Kh} x {Kw}")
+    print(f"    Padding:      {padding}")
+    print(f"    Precision:    {dtype_name.upper()}")
+    print(f"    Runs:         {num_runs}")
+    
+    np.random.seed(42)
+    # 3D Tensors: (N, H, W)
+    A = np.random.randn(N, H, W).astype(np_dtype)
+    H_out = H - Kh + 1 + 2 * padding
+    W_out = W - Kw + 1 + 2 * padding
+    grad_out = np.random.randn(N, H_out, W_out).astype(np_dtype)
+    
+    # MacroTorch (GPU)
+    d_A = cuda.to_device(A)
+    d_grad_out = cuda.to_device(grad_out)
+    
+    # 2D Kernel Weights: (Kh, Kw)
+    zeros_host = np.zeros((Kh, Kw), dtype=np.float32)
+    d_grad_W = cuda.to_device(zeros_host)
+    
+    # Grid Config
+    threads = (16, 16)
+    blocks_x = math.ceil(W_out / 16)
+    blocks_y = math.ceil(H_out / 16)
+    blocks_z = Kh * Kw
+    blocks = (blocks_x, blocks_y, blocks_z)
+    
+    # Warmup
+    for _ in range(5):
+        d_grad_W.copy_to_device(zeros_host)
+        WEIGHT_KERNEL_2D_LEGACY[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
+    cuda.synchronize()
+    
+    times = []
+    for _ in range(num_runs):
+        d_grad_W.copy_to_device(zeros_host)
+        cuda.synchronize()
+        start = time.perf_counter()
+        WEIGHT_KERNEL_2D_LEGACY[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
+        cuda.synchronize()
+        times.append((time.perf_counter() - start) * 1000)
+    
+    mt_time = np.median(times)
+    mt_std = np.std(times)
+    
+    print(f"\n  Results:")
+    print(f"  {'-'*50}")
+    print(f"  {'Implementation':<18} | {'Median (ms)':<12} | {'Std (ms)':<10}")
+    print(f"  {'-'*50}")
+    print(f"  {'MacroTorch (2D)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f}")
+    print(f"  {'-'*50}")
     print("\n" + "="*80)
     print(" MacroTorch Benchmark Suite")
     print("="*80)
@@ -573,6 +632,10 @@ def main():
     
     print_header("WEIGHT BACKWARD (LARGE) - FP16")
     benchmark_weight_backward(N=8, C=32, Cout=64, H=128, W=128, Kh=3, Kw=3, padding=1, dtype_name='float16', use_scipy=True)
+
+    # Weight Backward - 2D Legacy
+    print_header("WEIGHT BACKWARD (2D LEGACY) - FP32")
+    benchmark_weight_backward_2d_legacy(N=8, H=128, W=128, Kh=3, Kw=3, padding=1, dtype_name='float32')
     
     # ReLU Benchmarks
     print_header("RELU FORWARD - FP32")

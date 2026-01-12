@@ -3,10 +3,6 @@ import numpy as np
 import math
 
 
-# =============================================================================
-# FORWARD KERNELS
-# =============================================================================
-
 def make_conv2d_kernel(shared_size , dtype):
     bytes_needed = shared_size * shared_size * (2 if dtype == np.float16 else 4)
     assert bytes_needed <= 49152 , \
@@ -18,7 +14,7 @@ def make_conv2d_kernel(shared_size , dtype):
         ty = cuda.threadIdx.y
         bx = cuda.blockIdx.x
         by = cuda.blockIdx.y
-        bz = cuda.blockIdx.z # bz = n * Cout + c_out
+        bz = cuda.blockIdx.z
 
         BW, BH = cuda.blockDim.x, cuda.blockDim.y
         
@@ -42,7 +38,6 @@ def make_conv2d_kernel(shared_size , dtype):
         s = float32(0.0)
         
         for c_in in range(Cin):
-            # Load A[n, c_in, ...] tile to shared memory
             for ii in range(ty , sh_h , BH):  
                 for jj in range(tx , sh_w , BW):  
                     global_i = base_i + ii
@@ -73,7 +68,7 @@ def make_conv2d_direct(dtype):
     def conv2d_direct(A , K , out, padding , bias):
         i = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y  
         j = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x  
-        bz = cuda.blockIdx.z # n * Cout + c_out
+        bz = cuda.blockIdx.z
 
         N, Cin, H, W = A.shape
         Cout, _, Kh, Kw = K.shape
@@ -97,16 +92,12 @@ def make_conv2d_direct(dtype):
     return conv2d_direct
 
 
-# =============================================================================
-# BACKWARD KERNELS (Input Gradient)
-# =============================================================================
-
 def make_conv2d_backward_shared(shared_size, dtype):
     @cuda.jit
     def conv2d_backward_input_shared(grad_out, K, padding, grad_A):
         tx, ty = cuda.threadIdx.x, cuda.threadIdx.y
         bx, by = cuda.blockIdx.x, cuda.blockIdx.y
-        bz = cuda.blockIdx.z # n * Cin + c_in
+        bz = cuda.blockIdx.z
         BW, BH = cuda.blockDim.x, cuda.blockDim.y
         
         N, Cout, out_h, out_w = grad_out.shape
@@ -159,7 +150,7 @@ def make_conv2d_backward_global(dtype):
     @cuda.jit
     def conv2d_backward_input_global(grad_out, K, padding, grad_A):
         i, j = cuda.grid(2)
-        bz = cuda.blockIdx.z # n * Cin + c_in
+        bz = cuda.blockIdx.z
         
         N, Cout, out_h, out_w = grad_out.shape
         _, Cin, Kh, Kw = K.shape
@@ -182,17 +173,8 @@ def make_conv2d_backward_global(dtype):
     return conv2d_backward_input_global
 
 
-# =============================================================================
-# BACKWARD KERNELS (Bias Gradient)
-# =============================================================================
-
 @cuda.jit
 def conv2d_backward_bias(grad_out, grad_bias):
-    """
-    Compute bias gradient for 4D batched input (N, C, H, W).
-    Uses shared memory reduction for better performance.
-    Sums gradients across N, H, W dimensions for each channel.
-    """
     w, h, c = cuda.grid(3)
     N, C, H, W = grad_out.shape
     s_block_sum = cuda.shared.array(1, dtype=float32)
@@ -231,36 +213,26 @@ def conv2d_backward_weight_shared(input, grad_out, padding, grad_W):
 
     Cout, Cin, Kh, Kw = grad_W.shape
     
-    # bz = c_out * Cin + c_in
     c_out = bz // Cin
     c_in = bz % Cin
 
     N, _, H_out, W_out = grad_out.shape
     _, _, H_in, W_in = input.shape
     
-    # Shared memory for reduction
     s_partial = cuda.shared.array(256, dtype=float32)
 
-    # Optimization: Iterate over kernel dimensions
     for u in range(Kh):
         for v in range(Kw):
             s = float32(0.0)
             
-            # Spatial accumulation for this thread
             if i < H_out and j < W_out:
                 in_row = i + u - padding
                 in_col = j + v - padding
                 
                 if 0 <= in_row < H_in and 0 <= in_col < W_in:
-                    # Loop over batch
-                    # Note: We keep N inside u,v loop for now to avoid storing 
-                    # many partial sums in registers, but we can optimize this 
-                    # further if needed. However, the biggest gain is from 
-                    # reduced grid size and better occupancy.
                     for n in range(N):
                         s += float32(grad_out[n, c_out, i, j]) * float32(input[n, c_in, in_row, in_col])
             
-            # Reduce across threads in block
             s_partial[LINEAR_TID] = s
             cuda.syncthreads()
             
@@ -274,7 +246,6 @@ def conv2d_backward_weight_shared(input, grad_out, padding, grad_W):
             if LINEAR_TID == 0:
                 cuda.atomic.add(grad_W, (c_out, c_in, u, v), s_partial[0])
             
-            # Sync before next kernel position to prevent s_partial corruption
             cuda.syncthreads()
 
 @cuda.jit
@@ -351,10 +322,6 @@ def maxpool2d_forward(x , out , indices , pool_size):
         out[i, j] = max_val
         indices[i, j] = max_idx
 
-# =============================================================================
-# KERNEL REGISTRY AND TIER CONFIG
-# =============================================================================
-
 TIERS = {
     'tiny':   {'shared_size': 32  , 'block_size': 16 , 'use_shared': True}  ,
     'small':  {'shared_size': 48  , 'block_size': 16 , 'use_shared': True}  ,
@@ -383,7 +350,6 @@ for dtype_name in ['fp16' , 'fp32']:
 BIAS_KERNEL = conv2d_backward_bias
 WEIGHT_KERNEL = conv2d_backward_weight_shared
 RELU_FORWARD = relu_forward
-RELU_BACKWARD = relu_backward
 RELU_BACKWARD = relu_backward
 MAXPOOL2D_FORWARD = maxpool2d_forward
 WEIGHT_KERNEL_2D_LEGACY = conv2d_backward_weight_shared_2dchannel

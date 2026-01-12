@@ -588,6 +588,9 @@ def benchmark_weight_backward_2d_legacy(N, H, W, Kh, Kw, padding, dtype_name='fl
     print(f"  {'-'*50}")
     print(f"  {'MacroTorch (2D)':<18} | {mt_time:<12.4f} | {mt_std:<10.4f}")
     print(f"  {'-'*50}")
+
+
+def main():
     print("\n" + "="*80)
     print(" MacroTorch Benchmark Suite")
     print("="*80)

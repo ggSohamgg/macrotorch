@@ -558,7 +558,7 @@ def benchmark_weight_backward_2d_legacy(N, H, W, Kh, Kw, padding, dtype_name='fl
         A_padded = np.pad(A, ((0,0), (padding, padding), (padding, padding)), mode='constant')
         
         for n in range(N):
-            grad_W += correlate2d(A_padded[n], grad_out[n], mode='valid')
+            grad_W += correlate2d(A_padded[n].astype(np.float32), grad_out[n].astype(np.float32), mode='valid')
         numpy_result = grad_W
         numpy_time = (time.perf_counter() - start) * 1000
 

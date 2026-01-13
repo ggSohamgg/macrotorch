@@ -95,15 +95,19 @@ All tests and benchmarks were performed on an **NVIDIA Tesla T4 GPU**.
 
 ---
 
-## MaxPool2D
+## MaxPool2D (4D Multi-Channel) 🏆
 
-**Configuration**: 512×512 input, pool_size=2, FP32
+**Configuration**: Batch=8, Channels=64, 128×128 Input, Pool Size=2, FP32
 
-| Operation | NumPy (CPU) | PyTorch (GPU) | MacroTorch (GPU) | MT vs CPU | Error |
-| :---: | :---: | :---: | :---: | :---: | :---: |
-| **Forward** | 271.67 ms | 0.05 ms | 0.17 ms | **1620x faster** | `0.00e+00` |
+| Operation | PyTorch (GPU) | MacroTorch (GPU) | MT vs PT | Max Error |
+| :---: | :---: | :---: | :---: | :---: |
+| **Forward** | 0.36 ms | 0.25 ms | 1.4x faster | `0.00e+00` |
+| **Backward** | 1.32 ms | **0.51 ms** | **🏆 2.6x faster** | `0.00e+00` |
 
-> MacroTorch achieves **1620x speedup** over NumPy CPU with exact accuracy.
+> [!IMPORTANT]
+> **MacroTorch's MaxPool2D Backward is 2.6x faster than PyTorch!**
+
+> Both forward and backward produce identical numerical results (exact 0.00 error).
 
 ---
 
@@ -113,6 +117,7 @@ MacroTorch demonstrates:
 - ✅ **10-17x speedup** over CPU for forward/backward passes
 - ✅ **31-66x speedup** over CPU for bias gradient computation
 - ✅ **143-154x speedup** over CPU for weight gradient (large tensors)
+- ✅ **🏆 2.6x faster than PyTorch** for MaxPool2D backward
 - ✅ **🏆 5.3x faster than PyTorch** for 2D Legacy weight gradient backward
 - ✅ **🏆 1.8x faster than PyTorch** for ReLU backward
 - ✅ **Better FP16 precision** than PyTorch in bias gradient operations
@@ -122,6 +127,7 @@ MacroTorch demonstrates:
 
 | Kernel | Configuration | Speedup vs PyTorch |
 | :--- | :--- | :---: |
+| **MaxPool2D Backward** | 8×64×128×128, pool=2 | **🏆 2.6x faster** |
 | **Weight Backward (2D Legacy)** | 8×128×128, 3×3, FP32 | **🏆 5.3x faster** |
 | **Weight Backward (2D Legacy)** | 8×128×128, 3×3, FP16 | **🏆 3.5x faster** |
 | **ReLU Backward** | 1024×1024, FP32 | **🏆 1.8x faster** |

@@ -987,11 +987,23 @@ def benchmark_maxpool2d_forward(N, C, H, W, pool_size=2, dtype_name='float32', u
         if use_scipy:
             pt_error = np.abs(pt_result.cpu().numpy().astype(np.float32) - numpy_result).max()
     
-    # MacroTorch (GPU)
-    from macrotorch import maxpool2d_forward as mt_maxpool_forward
+    # MacroTorch (GPU) - Pre-allocated arrays
+    from macrotorch.kernels import MAXPOOL2D_FORWARD
     
+    d_x = cuda.to_device(x)
+    d_out = cuda.device_array((N, C, H_out, W_out), dtype=np_dtype)
+    d_indices = cuda.device_array((N, C, H_out, W_out), dtype=np.int32)
+    
+    threads = (16, 16)
+    blocks_x = math.ceil(W_out / 16)
+    blocks_y = math.ceil(H_out / 16)
+    blocks_z = N * C
+    blocks = (blocks_x, blocks_y, blocks_z)
+    
+    # Warmup
     for _ in range(5):
-        _ = mt_maxpool_forward(x, pool_size=pool_size)
+        MAXPOOL2D_FORWARD[blocks, threads](d_x, d_out, d_indices, pool_size)
+    cuda.synchronize()
     
     if TORCH_AVAILABLE:
         start_event = torch.cuda.Event(enable_timing=True)
@@ -1000,7 +1012,7 @@ def benchmark_maxpool2d_forward(N, C, H, W, pool_size=2, dtype_name='float32', u
         times = []
         for _ in range(num_runs):
             start_event.record()
-            mt_out, mt_indices = mt_maxpool_forward(x, pool_size=pool_size)
+            MAXPOOL2D_FORWARD[blocks, threads](d_x, d_out, d_indices, pool_size)
             end_event.record()
             torch.cuda.synchronize()
             times.append(start_event.elapsed_time(end_event))
@@ -1008,10 +1020,12 @@ def benchmark_maxpool2d_forward(N, C, H, W, pool_size=2, dtype_name='float32', u
         times = []
         for _ in range(num_runs):
             start = time.perf_counter()
-            mt_out, mt_indices = mt_maxpool_forward(x, pool_size=pool_size)
+            MAXPOOL2D_FORWARD[blocks, threads](d_x, d_out, d_indices, pool_size)
             cuda.synchronize()
             times.append((time.perf_counter() - start) * 1000)
     mt_time = np.median(times)
+    
+    mt_out = d_out.copy_to_host()
     
     mt_error = None
     if use_scipy and numpy_result is not None:
@@ -1088,14 +1102,30 @@ def benchmark_maxpool2d_backward(N, C, H, W, pool_size=2, dtype_name='float32', 
         pt_time = np.median(times)
         pt_grad = t_x.grad
     
-    # MacroTorch (GPU)
-    from macrotorch import maxpool2d_forward as mt_maxpool_forward
-    from macrotorch import maxpool2d_backward as mt_maxpool_backward
+    # MacroTorch (GPU) - Pre-allocated arrays
+    from macrotorch.kernels import MAXPOOL2D_FORWARD, MAXPOOL2D_BACKWARD
     
-    mt_out, mt_indices = mt_maxpool_forward(x, pool_size=pool_size)
+    d_x = cuda.to_device(x)
+    d_out = cuda.device_array((N, C, H_out, W_out), dtype=np_dtype)
+    d_indices = cuda.device_array((N, C, H_out, W_out), dtype=np.int32)
+    d_grad_out = cuda.to_device(grad_out)
+    d_grad_in = cuda.device_array((N, C, H, W), dtype=np.float32)
     
+    threads = (16, 16)
+    blocks_x = math.ceil(W_out / 16)
+    blocks_y = math.ceil(H_out / 16)
+    blocks_z = N * C
+    blocks = (blocks_x, blocks_y, blocks_z)
+    
+    # Forward to get indices
+    MAXPOOL2D_FORWARD[blocks, threads](d_x, d_out, d_indices, pool_size)
+    cuda.synchronize()
+    
+    # Warmup backward
     for _ in range(5):
-        _ = mt_maxpool_backward(grad_out, mt_indices, x.shape, pool_size=pool_size)
+        d_grad_in[:] = 0.0
+        MAXPOOL2D_BACKWARD[blocks, threads](d_grad_out, d_indices, d_grad_in, pool_size)
+    cuda.synchronize()
     
     if TORCH_AVAILABLE:
         start_event = torch.cuda.Event(enable_timing=True)
@@ -1103,16 +1133,18 @@ def benchmark_maxpool2d_backward(N, C, H, W, pool_size=2, dtype_name='float32', 
         
         times = []
         for _ in range(num_runs):
+            d_grad_in[:] = 0.0
             start_event.record()
-            mt_grad_in = mt_maxpool_backward(grad_out, mt_indices, x.shape, pool_size=pool_size)
+            MAXPOOL2D_BACKWARD[blocks, threads](d_grad_out, d_indices, d_grad_in, pool_size)
             end_event.record()
             torch.cuda.synchronize()
             times.append(start_event.elapsed_time(end_event))
     else:
         times = []
         for _ in range(num_runs):
+            d_grad_in[:] = 0.0
             start = time.perf_counter()
-            mt_grad_in = mt_maxpool_backward(grad_out, mt_indices, x.shape, pool_size=pool_size)
+            MAXPOOL2D_BACKWARD[blocks, threads](d_grad_out, d_indices, d_grad_in, pool_size)
             cuda.synchronize()
             times.append((time.perf_counter() - start) * 1000)
     mt_time = np.median(times)

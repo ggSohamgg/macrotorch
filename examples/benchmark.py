@@ -1149,15 +1149,27 @@ def benchmark_maxpool2d_backward(N, C, H, W, pool_size=2, dtype_name='float32', 
             times.append((time.perf_counter() - start) * 1000)
     mt_time = np.median(times)
     
+    # Get result and compute error vs PyTorch
+    mt_grad = d_grad_in.copy_to_host()
+    mt_error = None
+    if TORCH_AVAILABLE:
+        # Run one more backward to get the gradient for comparison
+        t_x.grad = None
+        t_out.backward(t_grad_out, retain_graph=True)
+        pt_grad = t_x.grad.cpu().numpy()
+        mt_error = np.abs(mt_grad - pt_grad).max()
+    
     # Results
     print(f"\n  Results:")
-    print(f"  {'-'*50}")
-    print(f"  {'Implementation':<18} | {'Median (ms)':<12} | {'Std (ms)':<10}")
-    print(f"  {'-'*50}")
+    print(f"  {'-'*70}")
+    print(f"  {'Implementation':<18} | {'Median (ms)':<12} | {'Std (ms)':<10} | {'Max Error':<12}")
+    print(f"  {'-'*70}")
     if TORCH_AVAILABLE:
-        print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {np.std(times):<10.4f}")
-    print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {np.std(times):<10.4f}")
-    print(f"  {'-'*50}")
+        print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {np.std(times):<10.4f} | {'Reference':<12}")
+        print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {np.std(times):<10.4f} | {f'{mt_error:.2e}':<12}")
+    else:
+        print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {np.std(times):<10.4f} | {'N/A':<12}")
+    print(f"  {'-'*70}")
     
     if TORCH_AVAILABLE:
         print(f"\n  MacroTorch vs PyTorch: {pt_time/mt_time:.2f}x {'faster' if pt_time > mt_time else 'slower'}")

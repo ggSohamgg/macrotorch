@@ -1,4 +1,4 @@
-from numba import cuda , float32
+from numba import cuda , float32 , int32
 import numpy as np
 import math
 
@@ -304,23 +304,51 @@ def relu_backward(x, grad_out, grad_in):
         grad_in.flat[i] = grad_out.flat[i] if x.flat[i] > 0 else 0.0
 
 @cuda.jit
-def maxpool2d_forward(x , out , indices , pool_size):
-    i, j = cuda.grid(2) 
-    out_H, out_W = out.shape
-    if i < out_H and j < out_W:
-        base_i = i * pool_size  
-        base_j = j * pool_size  
-        max_val = x[base_i, base_j] 
-        max_idx = 0
+def maxpool2d_forward(x, out, indices, pool_size):
+    i, j = cuda.grid(2)
+    bz = cuda.blockIdx.z
+    
+    N, C, H_in, W_in = x.shape
+    _, _, H_out, W_out = out.shape
+    
+    n = bz // C
+    c = bz % C
+    
+    if n < N and c < C and i < H_out and j < W_out:
+        base_i = i * pool_size
+        base_j = j * pool_size
+        max_val = x[n, c, base_i, base_j]
+        max_idx = int32(0)
         
         for u in range(pool_size):
             for v in range(pool_size):
-                temp = x[base_i + u, base_j + v]  
-                if temp > max_val:
-                    max_val = temp
-                    max_idx = u * pool_size + v
-        out[i, j] = max_val
-        indices[i, j] = max_idx
+                row = base_i + u
+                col = base_j + v
+                if row < H_in and col < W_in:
+                    temp = x[n, c, row, col]
+                    if temp > max_val:
+                        max_val = temp
+                        max_idx = int32(u * pool_size + v)
+        
+        out[n, c, i, j] = max_val
+        indices[n, c, i, j] = max_idx
+
+@cuda.jit
+def maxpool2d_backward(grad_out, indices, grad_in, pool_size):
+    i, j = cuda.grid(2)
+    bz = cuda.blockIdx.z
+    N, C, H_out, W_out = grad_out.shape
+    
+    n = bz // C
+    c = bz % C
+
+    if n < N and c < C and i < H_out and j < W_out:
+        max_idx = indices[n, c, i, j]
+        u = max_idx // pool_size
+        v = max_idx % pool_size
+        in_i = i * pool_size + u
+        in_j = j * pool_size + v
+        grad_in[n, c, in_i, in_j] = grad_out[n, c, i, j]
 
 TIERS = {
     'tiny':   {'shared_size': 32  , 'block_size': 16 , 'use_shared': True}  ,
@@ -352,4 +380,5 @@ WEIGHT_KERNEL = conv2d_backward_weight_shared
 RELU_FORWARD = relu_forward
 RELU_BACKWARD = relu_backward
 MAXPOOL2D_FORWARD = maxpool2d_forward
+MAXPOOL2D_BACKWARD = maxpool2d_backward
 WEIGHT_KERNEL_2D_LEGACY = conv2d_backward_weight_shared_2dchannel

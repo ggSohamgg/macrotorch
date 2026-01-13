@@ -5,6 +5,7 @@ from .ops import weight_backward as conv2d_weight_backward
 from .ops import relu
 from .ops import relu_backward
 from .ops import maxpool2d_forward
+from .ops import maxpool2d_backward
 from .layers import Conv2d
 
 __version__ = "0.5.0"
@@ -18,4 +19,5 @@ __all__ = [
     'relu',
     'relu_backward',
     'maxpool2d_forward',
+    'maxpool2d_backward',
 ]

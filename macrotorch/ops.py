@@ -1,7 +1,7 @@
 import numpy as np
 import math
 from numba import cuda
-from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD, MAXPOOL2D_FORWARD
+from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD, MAXPOOL2D_FORWARD, MAXPOOL2D_BACKWARD
 
 
 def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=None , d_K=None , d_out=None):
@@ -332,31 +332,25 @@ def relu_backward(x, grad_out, d_x=None, d_grad_out=None, d_grad_in=None):
 
 def maxpool2d_forward(x, pool_size=2, d_x=None, d_out=None, d_indices=None):
     """
-    MaxPool2D Forward Pass
+    MaxPool2D Forward Pass (4D Multi-Channel)
     
-    Computes max pooling over 2D input.
+    Computes max pooling over 4D input (N, C, H, W).
     
     Parameters
     ----------
     x : numpy.ndarray
-        Input array of shape (H, W)
+        Input array of shape (N, C, H, W)
     pool_size : int
         Size of pooling window (default: 2)
-    d_x : numba.cuda.DeviceNDArray, optional
-        Pre-allocated device input array
-    d_out : numba.cuda.DeviceNDArray, optional
-        Pre-allocated device output array
-    d_indices : numba.cuda.DeviceNDArray, optional
-        Pre-allocated device indices array
         
     Returns
     -------
-    tuple(numpy.ndarray, numpy.ndarray) or tuple(DeviceNDArray, DeviceNDArray)
-        (output, indices) - pooled output and max indices for backward pass
+    tuple(numpy.ndarray, numpy.ndarray)
+        (output, indices) - pooled output (N, C, H_out, W_out) and max indices for backward pass
     """
-    H, W = x.shape
-    out_H = H // pool_size
-    out_W = W // pool_size
+    N, C, H, W = x.shape
+    H_out = H // pool_size
+    W_out = W // pool_size
     
     if d_x is None:
         d_x = cuda.to_device(x)
@@ -365,14 +359,16 @@ def maxpool2d_forward(x, pool_size=2, d_x=None, d_out=None, d_indices=None):
         return_host = False
     
     if d_out is None:
-        d_out = cuda.device_array((out_H, out_W), dtype=x.dtype)
+        d_out = cuda.device_array((N, C, H_out, W_out), dtype=x.dtype)
     
     if d_indices is None:
-        d_indices = cuda.device_array((out_H, out_W), dtype=np.int32)
+        d_indices = cuda.device_array((N, C, H_out, W_out), dtype=np.int32)
     
-    # 2D grid configuration
     threads = (16, 16)
-    blocks = (math.ceil(out_W / 16), math.ceil(out_H / 16))
+    blocks_x = math.ceil(W_out / 16)
+    blocks_y = math.ceil(H_out / 16)
+    blocks_z = N * C
+    blocks = (blocks_x, blocks_y, blocks_z)
     
     MAXPOOL2D_FORWARD[blocks, threads](d_x, d_out, d_indices, pool_size)
     cuda.synchronize()
@@ -381,3 +377,55 @@ def maxpool2d_forward(x, pool_size=2, d_x=None, d_out=None, d_indices=None):
         return d_out.copy_to_host(), d_indices.copy_to_host()
     else:
         return d_out, d_indices
+
+
+def maxpool2d_backward(grad_out, indices, input_shape, pool_size=2, d_grad_out=None, d_indices=None, d_grad_in=None):
+    """
+    MaxPool2D Backward Pass (4D Multi-Channel)
+    
+    Computes gradient w.r.t. input for max pooling.
+    
+    Parameters
+    ----------
+    grad_out : numpy.ndarray
+        Gradient from next layer of shape (N, C, H_out, W_out)
+    indices : numpy.ndarray
+        Indices from forward pass of shape (N, C, H_out, W_out)
+    input_shape : tuple
+        Shape of original input (N, C, H, W)
+    pool_size : int
+        Size of pooling window (default: 2)
+        
+    Returns
+    -------
+    numpy.ndarray
+        Gradient w.r.t. input of shape (N, C, H, W)
+    """
+    N, C, H_out, W_out = grad_out.shape
+    
+    if d_grad_out is None:
+        d_grad_out = cuda.to_device(grad_out)
+        return_host = True
+    else:
+        return_host = False
+    
+    if d_indices is None:
+        d_indices = cuda.to_device(indices)
+    
+    if d_grad_in is None:
+        d_grad_in = cuda.device_array(input_shape, dtype=np.float32)
+        d_grad_in[:] = 0.0
+    
+    threads = (16, 16)
+    blocks_x = math.ceil(W_out / 16)
+    blocks_y = math.ceil(H_out / 16)
+    blocks_z = N * C
+    blocks = (blocks_x, blocks_y, blocks_z)
+    
+    MAXPOOL2D_BACKWARD[blocks, threads](d_grad_out, d_indices, d_grad_in, pool_size)
+    cuda.synchronize()
+    
+    if return_host:
+        return d_grad_in.copy_to_host()
+    else:
+        return d_grad_in

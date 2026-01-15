@@ -132,3 +132,10 @@ MacroTorch achieves competitive performance, with **custom kernels that beat PyT
 ```bash
 python examples/benchmark.py
 ```
+
+## 📝 Acknowledgments
+
+- **Core CUDA Kernels** (`macrotorch/kernels.py`): Handwritten by [@ggSohamgg](https://github.com/ggSohamgg) — the shared memory tiling, kernel optimizations, and all CUDA implementations are original work.
+- **Benchmarks & Utilities** (`examples/benchmark.py`, `ops.py`, etc.): AI-assisted development with help from LLMs for boilerplate, documentation, and testing infrastructure.
+
+*Credit where credit's due!* 🤝

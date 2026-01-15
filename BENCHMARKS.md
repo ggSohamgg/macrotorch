@@ -111,6 +111,24 @@ All tests and benchmarks were performed on an **NVIDIA Tesla T4 GPU**.
 
 ---
 
+## Softmax
+
+### Small Configuration (Batch=8, Classes=10, Spatial=1×1, FP32)
+
+| Operation | NumPy (CPU) | PyTorch (GPU) | MacroTorch (GPU) | Max Error |
+| :---: | :---: | :---: | :---: | :---: |
+| **Forward** | 0.097 ms | 0.021 ms | 0.067 ms | `2.98e-08` |
+
+### Large Configuration (Batch=8, Classes=10, Spatial=28×28, FP32)
+
+| Operation | NumPy (CPU) | PyTorch (GPU) | MacroTorch (GPU) | Max Error |
+| :---: | :---: | :---: | :---: | :---: |
+| **Forward** | 0.214 ms | 0.027 ms | 0.087 ms | `1.79e-07` |
+
+> MacroTorch achieves **2.5x speedup** over CPU with exact numerical accuracy matching PyTorch.
+
+---
+
 ## Summary
 
 MacroTorch demonstrates:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "macrotorch"
-version = "0.5.0"
+version = "0.6.0"
 description = "Custom CUDA kernels for 2D convolution with PyTorch-style API"
 readme = "README.md"
 requires-python = ">=3.8"

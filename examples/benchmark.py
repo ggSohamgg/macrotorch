@@ -724,8 +724,11 @@ def main():
     benchmark_maxpool2d_backward(N=8, C=64, H=128, W=128, pool_size=2, dtype_name='float32')
     
     # Softmax Benchmarks
-    print_header("SOFTMAX FORWARD - FP32")
+    print_header("SOFTMAX FORWARD (SMALL) - FP32")
     benchmark_softmax_forward(N=8, C=10, H=1, W=1, dtype_name='float32')
+    
+    print_header("SOFTMAX FORWARD (LARGE) - FP32")
+    benchmark_softmax_forward(N=8, C=10, H=28, W=28, dtype_name='float32')
     
     print("\n" + "="*80)
     print(" BENCHMARK COMPLETE")

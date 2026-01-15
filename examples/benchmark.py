@@ -19,8 +19,8 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
-from macrotorch import conv2d_forward, conv2d_input_backward, conv2d_bias_backward, conv2d_weight_backward, Conv2d, relu, relu_backward, maxpool2d_forward
-from macrotorch.kernels import WEIGHT_KERNEL, RELU_FORWARD, MAXPOOL2D_FORWARD
+from macrotorch import conv2d_forward, conv2d_input_backward, conv2d_bias_backward, conv2d_weight_backward, Conv2d, relu, relu_backward, maxpool2d_forward, softmax_forward
+from macrotorch.kernels import WEIGHT_KERNEL, RELU_FORWARD, MAXPOOL2D_FORWARD, SOFTMAX_FORWARD
 import math
 
 
@@ -723,6 +723,10 @@ def main():
     print_header("MAXPOOL2D BACKWARD (LARGE) - FP32")
     benchmark_maxpool2d_backward(N=8, C=64, H=128, W=128, pool_size=2, dtype_name='float32')
     
+    # Softmax Benchmarks
+    print_header("SOFTMAX FORWARD - FP32")
+    benchmark_softmax_forward(N=8, C=10, H=1, W=1, dtype_name='float32')
+    
     print("\n" + "="*80)
     print(" BENCHMARK COMPLETE")
     print("="*80 + "\n")
@@ -1170,6 +1174,104 @@ def benchmark_maxpool2d_backward(N, C, H, W, pool_size=2, dtype_name='float32', 
     else:
         print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {np.std(times):<10.4f} | {'N/A':<12}")
     print(f"  {'-'*70}")
+    
+    if TORCH_AVAILABLE:
+        print(f"\n  MacroTorch vs PyTorch: {pt_time/mt_time:.2f}x {'faster' if pt_time > mt_time else 'slower'}")
+
+
+def benchmark_softmax_forward(N, C, H, W, dtype_name='float32', num_runs=10):
+    """Benchmark Softmax forward pass (4D)."""
+    np_dtype = np.float32
+    
+    print(f"\n  Configuration:")
+    print(f"    Batch:        {N}")
+    print(f"    Classes:      {C}")
+    print(f"    Spatial:      {H} x {W}")
+    print(f"    Precision:    {dtype_name.upper()}")
+    print(f"    Runs:         {num_runs}")
+    
+    np.random.seed(42)
+    x = np.random.randn(N, C, H, W).astype(np_dtype)
+    
+    # NumPy (CPU) - Ground Truth
+    def numpy_softmax(x):
+        x_max = x.max(axis=1, keepdims=True)
+        exp_x = np.exp(x - x_max)
+        return exp_x / exp_x.sum(axis=1, keepdims=True)
+    
+    start = time.perf_counter()
+    numpy_result = numpy_softmax(x)
+    numpy_time = (time.perf_counter() - start) * 1000
+    
+    # PyTorch (GPU)
+    pt_time, pt_error = None, None
+    if TORCH_AVAILABLE:
+        t_x = torch.from_numpy(x).cuda()
+        
+        for _ in range(5):
+            _ = torch.nn.functional.softmax(t_x, dim=1)
+        torch.cuda.synchronize()
+        
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        times = []
+        for _ in range(num_runs):
+            start_event.record()
+            pt_result = torch.nn.functional.softmax(t_x, dim=1)
+            end_event.record()
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))
+        pt_time = np.median(times)
+        pt_error = np.abs(pt_result.cpu().numpy() - numpy_result).max()
+    
+    # MacroTorch (GPU) - Pre-allocated
+    d_x = cuda.to_device(x)
+    d_out = cuda.device_array((N, C, H, W), dtype=np_dtype)
+    
+    threads = (16, 16)
+    blocks_x = math.ceil(W / 16)
+    blocks_y = math.ceil(H / 16)
+    blocks_z = N
+    blocks = (blocks_x, blocks_y, blocks_z)
+    
+    for _ in range(5):
+        SOFTMAX_FORWARD[blocks, threads](d_x, d_out)
+    cuda.synchronize()
+    
+    if TORCH_AVAILABLE:
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        times = []
+        for _ in range(num_runs):
+            start_event.record()
+            SOFTMAX_FORWARD[blocks, threads](d_x, d_out)
+            end_event.record()
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))
+    else:
+        times = []
+        for _ in range(num_runs):
+            start = time.perf_counter()
+            SOFTMAX_FORWARD[blocks, threads](d_x, d_out)
+            cuda.synchronize()
+            times.append((time.perf_counter() - start) * 1000)
+    mt_time = np.median(times)
+    
+    mt_result = d_out.copy_to_host()
+    mt_error = np.abs(mt_result - numpy_result).max()
+    
+    # Results
+    print(f"\n  Results:")
+    print(f"  {'-'*74}")
+    print(f"  {'Implementation':<18} | {'Time (ms)':<12} | {'Speedup':<10} | {'Max Error':<12}")
+    print(f"  {'-'*74}")
+    print(f"  {'NumPy (CPU)':<18} | {numpy_time:<12.4f} | {'1.00x':<10} | {'Ground Truth':<12}")
+    if TORCH_AVAILABLE:
+        print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {f'{numpy_time/pt_time:.2f}x':<10} | {f'{pt_error:.2e}':<12}")
+    print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {f'{numpy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}':<12}")
+    print(f"  {'-'*74}")
     
     if TORCH_AVAILABLE:
         print(f"\n  MacroTorch vs PyTorch: {pt_time/mt_time:.2f}x {'faster' if pt_time > mt_time else 'slower'}")

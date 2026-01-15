@@ -1,7 +1,7 @@
 import numpy as np
 import math
 from numba import cuda
-from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD, MAXPOOL2D_FORWARD, MAXPOOL2D_BACKWARD
+from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD, MAXPOOL2D_FORWARD, MAXPOOL2D_BACKWARD, SOFTMAX_FORWARD
 
 
 def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=None , d_K=None , d_out=None):
@@ -328,6 +328,48 @@ def relu_backward(x, grad_out, d_x=None, d_grad_out=None, d_grad_in=None):
         return d_grad_in.copy_to_host()
     else:
         return d_grad_in
+
+
+def softmax_forward(x, d_x=None, d_out=None):
+    """
+    Softmax Forward Pass (4D Multi-Channel)
+    
+    Computes softmax along channel dimension for 4D input (N, C, H, W).
+    
+    Parameters
+    ----------
+    x : numpy.ndarray
+        Input logits of shape (N, C, H, W)
+        
+    Returns
+    -------
+    numpy.ndarray
+        Softmax probabilities of shape (N, C, H, W)
+    """
+    N, C, H, W = x.shape
+    
+    if d_x is None:
+        d_x = cuda.to_device(x.astype(np.float32))
+        return_host = True
+    else:
+        return_host = False
+    
+    if d_out is None:
+        d_out = cuda.device_array((N, C, H, W), dtype=np.float32)
+    
+    threads = (16, 16)
+    blocks_x = math.ceil(W / 16)
+    blocks_y = math.ceil(H / 16)
+    blocks_z = N
+    blocks = (blocks_x, blocks_y, blocks_z)
+    
+    SOFTMAX_FORWARD[blocks, threads](d_x, d_out)
+    cuda.synchronize()
+    
+    if return_host:
+        return d_out.copy_to_host()
+    else:
+        return d_out
 
 
 def maxpool2d_forward(x, pool_size=2, d_x=None, d_out=None, d_indices=None):

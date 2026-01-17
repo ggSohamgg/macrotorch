@@ -111,19 +111,24 @@ All tests and benchmarks were performed on an **NVIDIA Tesla T4 GPU**.
 
 ---
 
-## Softmax
+## Softmax 🏆
 
 ### Small Configuration (Batch=8, Classes=10, Spatial=1×1, FP32)
 
-| Operation | NumPy (CPU) | PyTorch (GPU) | MacroTorch (GPU) | Max Error |
-| :---: | :---: | :---: | :---: | :---: |
-| **Forward** | 0.097 ms | 0.021 ms | 0.067 ms | `2.98e-08` |
+| Operation | NumPy (CPU) | PyTorch (GPU) | MacroTorch (GPU) | MT vs PT | Max Error |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| **Forward** | 0.097 ms | 0.021 ms | 0.067 ms | - | `2.98e-08` |
+| **Backward** | 0.009 ms | 0.207 ms | **0.077 ms** | **🏆 2.71x faster** | `2.98e-08` |
 
 ### Large Configuration (Batch=8, Classes=10, Spatial=28×28, FP32)
 
-| Operation | NumPy (CPU) | PyTorch (GPU) | MacroTorch (GPU) | Max Error |
-| :---: | :---: | :---: | :---: | :---: |
-| **Forward** | 0.214 ms | 0.027 ms | 0.087 ms | `1.79e-07` |
+| Operation | NumPy (CPU) | PyTorch (GPU) | MacroTorch (GPU) | MT vs PT | Max Error |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| **Forward** | 0.214 ms | 0.027 ms | 0.087 ms | - | `1.79e-07` |
+| **Backward** | 0.116 ms | 0.200 ms | **0.085 ms** | **🏆 2.35x faster** | `1.19e-07` |
+
+> [!IMPORTANT]
+> **MacroTorch's Softmax Backward is up to 2.71x faster than PyTorch!**
 
 > MacroTorch achieves **2.5x speedup** over CPU with exact numerical accuracy matching PyTorch.
 
@@ -137,6 +142,7 @@ MacroTorch demonstrates:
 - ✅ **143-154x speedup** over CPU for weight gradient (large tensors)
 - ✅ **🏆 2.6x faster than PyTorch** for MaxPool2D backward
 - ✅ **🏆 5.3x faster than PyTorch** for 2D Legacy weight gradient backward
+- ✅ **🏆 2.71x faster than PyTorch** for Softmax backward
 - ✅ **🏆 1.8x faster than PyTorch** for ReLU backward
 - ✅ **Better FP16 precision** than PyTorch in bias gradient operations
 - ✅ **Excellent accuracy** with max error ~1e-03 to 1e-05
@@ -146,6 +152,8 @@ MacroTorch demonstrates:
 | Kernel | Configuration | Speedup vs PyTorch |
 | :--- | :--- | :---: |
 | **MaxPool2D Backward** | 8×64×128×128, pool=2 | **🏆 2.6x faster** |
+| **Softmax Backward** | 8×10×1×1, FP32 | **🏆 2.71x faster** |
+| **Softmax Backward** | 8×10×28×28, FP32 | **🏆 2.35x faster** |
 | **Weight Backward (2D Legacy)** | 8×128×128, 3×3, FP32 | **🏆 5.3x faster** |
 | **Weight Backward (2D Legacy)** | 8×128×128, 3×3, FP16 | **🏆 3.5x faster** |
 | **ReLU Backward** | 1024×1024, FP32 | **🏆 1.8x faster** |

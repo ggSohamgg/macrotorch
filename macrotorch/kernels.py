@@ -368,6 +368,21 @@ def softmax_forward(logits, out):
         for c in range(C):
             out[n, c, i, j] /= exp_sum
 
+@cuda.jit 
+def softmax_backward(grad_out, probs, grad_logits):
+    i, j = cuda.grid(2)
+    N, C, H, W = grad_out.shape
+    n = cuda.blockIdx.z
+    
+    if n < N and i < H and j < W:
+        sum_grad = 0.0
+        for c in range(C):
+            sum_grad += grad_out[n, c, i, j] * probs[n, c, i, j]
+        
+        for c in range(C):
+            grad_logits[n, c, i, j] = probs[n, c, i, j] * (grad_out[n, c, i, j] - sum_grad)
+
+
 TIERS = {
     'tiny':   {'shared_size': 32  , 'block_size': 16 , 'use_shared': True}  ,
     'small':  {'shared_size': 48  , 'block_size': 16 , 'use_shared': True}  ,
@@ -401,3 +416,4 @@ MAXPOOL2D_FORWARD = maxpool2d_forward
 MAXPOOL2D_BACKWARD = maxpool2d_backward
 WEIGHT_KERNEL_2D_LEGACY = conv2d_backward_weight_shared_2dchannel
 SOFTMAX_FORWARD = softmax_forward
+SOFTMAX_BACKWARD = softmax_backward

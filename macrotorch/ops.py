@@ -1,7 +1,7 @@
 import numpy as np
 import math
 from numba import cuda
-from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD, MAXPOOL2D_FORWARD, MAXPOOL2D_BACKWARD, SOFTMAX_FORWARD
+from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD, MAXPOOL2D_FORWARD, MAXPOOL2D_BACKWARD, SOFTMAX_FORWARD, SOFTMAX_BACKWARD
 
 
 def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=None , d_K=None , d_out=None):
@@ -370,6 +370,58 @@ def softmax_forward(x, d_x=None, d_out=None):
         return d_out.copy_to_host()
     else:
         return d_out
+
+def softmax_backward(grad_out, probs, d_grad_out=None, d_probs=None, d_grad_logits=None):
+    """
+    Softmax Backward Pass (4D Multi-Channel)
+    
+    Computes gradient w.r.t. logits for softmax along channel dimension.
+    
+    Parameters
+    ----------
+    grad_out : numpy.ndarray
+        Gradient from next layer of shape (N, C, H, W)
+    probs : numpy.ndarray
+        Softmax probabilities from forward pass of shape (N, C, H, W)
+    d_grad_out : numba.cuda.DeviceNDArray, optional
+        Pre-allocated device gradient output array
+    d_probs : numba.cuda.DeviceNDArray, optional
+        Pre-allocated device probabilities array
+    d_grad_logits : numba.cuda.DeviceNDArray, optional
+        Pre-allocated device gradient logits array
+        
+    Returns
+    -------
+    numpy.ndarray or numba.cuda.DeviceNDArray
+        Gradient w.r.t. input logits of shape (N, C, H, W)
+    """
+    N, C, H, W = grad_out.shape
+    
+    if d_grad_out is None:
+        d_grad_out = cuda.to_device(grad_out.astype(np.float32))
+        return_host = True
+    else:
+        return_host = False
+    
+    if d_probs is None:
+        d_probs = cuda.to_device(probs.astype(np.float32))
+    
+    if d_grad_logits is None:
+        d_grad_logits = cuda.device_array((N, C, H, W), dtype=np.float32)
+    
+    threads = (16, 16)
+    blocks_x = math.ceil(W / 16)
+    blocks_y = math.ceil(H / 16)
+    blocks_z = N
+    blocks = (blocks_x, blocks_y, blocks_z)
+    
+    SOFTMAX_BACKWARD[blocks, threads](d_grad_out, d_probs, d_grad_logits)
+    cuda.synchronize()
+    
+    if return_host:
+        return d_grad_logits.copy_to_host()
+    else:
+        return d_grad_logits
 
 
 def maxpool2d_forward(x, pool_size=2, d_x=None, d_out=None, d_indices=None):

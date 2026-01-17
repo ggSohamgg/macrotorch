@@ -19,8 +19,8 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
-from macrotorch import conv2d_forward, conv2d_input_backward, conv2d_bias_backward, conv2d_weight_backward, Conv2d, relu, relu_backward, maxpool2d_forward, softmax_forward
-from macrotorch.kernels import WEIGHT_KERNEL, RELU_FORWARD, MAXPOOL2D_FORWARD, SOFTMAX_FORWARD
+from macrotorch import conv2d_forward, conv2d_input_backward, conv2d_bias_backward, conv2d_weight_backward, Conv2d, relu, relu_backward, maxpool2d_forward, softmax_forward, softmax_backward
+from macrotorch.kernels import WEIGHT_KERNEL, RELU_FORWARD, MAXPOOL2D_FORWARD, SOFTMAX_FORWARD, SOFTMAX_BACKWARD
 import math
 
 
@@ -730,6 +730,12 @@ def main():
     print_header("SOFTMAX FORWARD (LARGE) - FP32")
     benchmark_softmax_forward(N=8, C=10, H=28, W=28, dtype_name='float32')
     
+    print_header("SOFTMAX BACKWARD (SMALL) - FP32")
+    benchmark_softmax_backward(N=8, C=10, H=1, W=1, dtype_name='float32')
+    
+    print_header("SOFTMAX BACKWARD (LARGE) - FP32")
+    benchmark_softmax_backward(N=8, C=10, H=28, W=28, dtype_name='float32')
+    
     print("\n" + "="*80)
     print(" BENCHMARK COMPLETE")
     print("="*80 + "\n")
@@ -1263,6 +1269,123 @@ def benchmark_softmax_forward(N, C, H, W, dtype_name='float32', num_runs=10):
     mt_time = np.median(times)
     
     mt_result = d_out.copy_to_host()
+    mt_error = np.abs(mt_result - numpy_result).max()
+    
+    # Results
+    print(f"\n  Results:")
+    print(f"  {'-'*74}")
+    print(f"  {'Implementation':<18} | {'Time (ms)':<12} | {'Speedup':<10} | {'Max Error':<12}")
+    print(f"  {'-'*74}")
+    print(f"  {'NumPy (CPU)':<18} | {numpy_time:<12.4f} | {'1.00x':<10} | {'Ground Truth':<12}")
+    if TORCH_AVAILABLE:
+        print(f"  {'PyTorch (GPU)':<18} | {pt_time:<12.4f} | {f'{numpy_time/pt_time:.2f}x':<10} | {f'{pt_error:.2e}':<12}")
+    print(f"  {'MacroTorch (GPU)':<18} | {mt_time:<12.4f} | {f'{numpy_time/mt_time:.2f}x':<10} | {f'{mt_error:.2e}':<12}")
+    print(f"  {'-'*74}")
+    
+    if TORCH_AVAILABLE:
+        print(f"\n  MacroTorch vs PyTorch: {pt_time/mt_time:.2f}x {'faster' if pt_time > mt_time else 'slower'}")
+
+
+def benchmark_softmax_backward(N, C, H, W, dtype_name='float32', num_runs=10):
+    """Benchmark Softmax backward pass (4D)."""
+    np_dtype = np.float32
+    
+    print(f"\n  Configuration:")
+    print(f"    Batch:        {N}")
+    print(f"    Classes:      {C}")
+    print(f"    Spatial:      {H} x {W}")
+    print(f"    Precision:    {dtype_name.upper()}")
+    print(f"    Runs:         {num_runs}")
+    
+    np.random.seed(42)
+    x = np.random.randn(N, C, H, W).astype(np_dtype)
+    grad_out = np.random.randn(N, C, H, W).astype(np_dtype)
+    
+    # Compute softmax forward for probabilities
+    def numpy_softmax(x):
+        x_max = x.max(axis=1, keepdims=True)
+        exp_x = np.exp(x - x_max)
+        return exp_x / exp_x.sum(axis=1, keepdims=True)
+    
+    probs = numpy_softmax(x)
+    
+    # NumPy (CPU) - Ground Truth
+    def numpy_softmax_backward(grad_out, probs):
+        # Gradient of softmax: grad_logits = probs * (grad_out - sum(grad_out * probs))
+        sum_grad = (grad_out * probs).sum(axis=1, keepdims=True)
+        return probs * (grad_out - sum_grad)
+    
+    start = time.perf_counter()
+    numpy_result = numpy_softmax_backward(grad_out, probs)
+    numpy_time = (time.perf_counter() - start) * 1000
+    
+    # PyTorch (GPU)
+    pt_time, pt_error = None, None
+    if TORCH_AVAILABLE:
+        t_x = torch.from_numpy(x).cuda().requires_grad_(True)
+        t_probs = torch.nn.functional.softmax(t_x, dim=1)
+        t_grad_out = torch.from_numpy(grad_out).cuda()
+        
+        for _ in range(5):
+            t_probs.backward(t_grad_out, retain_graph=True)
+            t_x.grad = None
+        torch.cuda.synchronize()
+        
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        times = []
+        for _ in range(num_runs):
+            start_event.record()
+            t_probs.backward(t_grad_out, retain_graph=True)
+            end_event.record()
+            torch.cuda.synchronize()
+            t_x.grad = None
+            times.append(start_event.elapsed_time(end_event))
+        pt_time = np.median(times)
+        
+        # Get PyTorch result for error comparison
+        t_probs.backward(t_grad_out, retain_graph=True)
+        pt_result = t_x.grad.cpu().numpy()
+        pt_error = np.abs(pt_result - numpy_result).max()
+        t_x.grad = None
+    
+    # MacroTorch (GPU) - Pre-allocated
+    d_grad_out = cuda.to_device(grad_out)
+    d_probs = cuda.to_device(probs)
+    d_grad_logits = cuda.device_array((N, C, H, W), dtype=np_dtype)
+    
+    threads = (16, 16)
+    blocks_x = math.ceil(W / 16)
+    blocks_y = math.ceil(H / 16)
+    blocks_z = N
+    blocks = (blocks_x, blocks_y, blocks_z)
+    
+    for _ in range(5):
+        SOFTMAX_BACKWARD[blocks, threads](d_grad_out, d_probs, d_grad_logits)
+    cuda.synchronize()
+    
+    if TORCH_AVAILABLE:
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        times = []
+        for _ in range(num_runs):
+            start_event.record()
+            SOFTMAX_BACKWARD[blocks, threads](d_grad_out, d_probs, d_grad_logits)
+            end_event.record()
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))
+    else:
+        times = []
+        for _ in range(num_runs):
+            start = time.perf_counter()
+            SOFTMAX_BACKWARD[blocks, threads](d_grad_out, d_probs, d_grad_logits)
+            cuda.synchronize()
+            times.append((time.perf_counter() - start) * 1000)
+    mt_time = np.median(times)
+    
+    mt_result = d_grad_logits.copy_to_host()
     mt_error = np.abs(mt_result - numpy_result).max()
     
     # Results

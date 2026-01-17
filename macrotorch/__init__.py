@@ -7,6 +7,7 @@ from .ops import relu_backward
 from .ops import maxpool2d_forward
 from .ops import maxpool2d_backward
 from .ops import softmax_forward
+from .ops import softmax_backward
 from .layers import Conv2d
 
 __version__ = "0.6.0"
@@ -22,4 +23,5 @@ __all__ = [
     'maxpool2d_forward',
     'maxpool2d_backward',
     'softmax_forward',
+    'softmax_backward',
 ]

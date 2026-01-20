@@ -1,7 +1,7 @@
 import numpy as np
 import math
 from numba import cuda
-from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD, MAXPOOL2D_FORWARD, MAXPOOL2D_BACKWARD, SOFTMAX_FORWARD, SOFTMAX_BACKWARD
+from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD, MAXPOOL2D_FORWARD, MAXPOOL2D_BACKWARD, SOFTMAX_FORWARD, SOFTMAX_BACKWARD, matmul_tiled
 
 
 def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=None , d_K=None , d_out=None):
@@ -523,3 +523,63 @@ def maxpool2d_backward(grad_out, indices, input_shape, pool_size=2, d_grad_out=N
         return d_grad_in.copy_to_host()
     else:
         return d_grad_in
+
+
+def matmul(A, B, d_A=None, d_B=None, d_C=None):
+    """
+    Tiled Matrix Multiplication using CUDA
+    
+    Performs C = A @ B using a tiled CUDA kernel with shared memory.
+    Uses 16x16 tiles for efficient GPU computation.
+    
+    Parameters
+    ----------
+    A : numpy.ndarray
+        Input matrix of shape (M, K)
+    B : numpy.ndarray
+        Input matrix of shape (K, N)
+    d_A : numba.cuda.DeviceNDArray, optional
+        Pre-allocated device array for A
+    d_B : numba.cuda.DeviceNDArray, optional
+        Pre-allocated device array for B
+    d_C : numba.cuda.DeviceNDArray, optional
+        Pre-allocated device output array
+        
+    Returns
+    -------
+    numpy.ndarray or numba.cuda.DeviceNDArray
+        Result matrix C of shape (M, N)
+    """
+    if d_A is None:
+        assert A.ndim == 2, f"A must be 2D, got shape {A.shape}"
+        assert B.ndim == 2, f"B must be 2D, got shape {B.shape}"
+        assert A.shape[1] == B.shape[0], f"Inner dimensions must match: A.shape[1]={A.shape[1]} != B.shape[0]={B.shape[0]}"
+        
+        d_A = cuda.to_device(A.astype(np.float32))
+        d_B = cuda.to_device(B.astype(np.float32))
+        return_host = True
+    else:
+        return_host = False
+    
+    M, K = d_A.shape
+    _, N = d_B.shape
+    
+    if d_C is None:
+        d_C = cuda.device_array((M, N), dtype=np.float32)
+    
+    # Tile configuration matches the kernel
+    TILE_M = 16
+    TILE_N = 16
+    
+    threads_per_block = (TILE_N, TILE_M)
+    blocks_x = math.ceil(N / TILE_N)
+    blocks_y = math.ceil(M / TILE_M)
+    blocks_per_grid = (blocks_x, blocks_y)
+    
+    matmul_tiled[blocks_per_grid, threads_per_block](d_A, d_B, d_C)
+    cuda.synchronize()
+    
+    if return_host:
+        return d_C.copy_to_host()
+    else:
+        return d_C

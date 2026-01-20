@@ -8,9 +8,10 @@ from .ops import maxpool2d_forward
 from .ops import maxpool2d_backward
 from .ops import softmax_forward
 from .ops import softmax_backward
+from .ops import matmul
 from .layers import Conv2d
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 __all__ = [
     'Conv2d',
@@ -24,4 +25,5 @@ __all__ = [
     'maxpool2d_backward',
     'softmax_forward',
     'softmax_backward',
+    'matmul',
 ]

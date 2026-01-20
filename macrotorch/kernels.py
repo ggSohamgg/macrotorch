@@ -382,7 +382,48 @@ def softmax_backward(grad_out, probs, grad_logits):
         for c in range(C):
             grad_logits[n, c, i, j] = probs[n, c, i, j] * (grad_out[n, c, i, j] - sum_grad)
 
+@cuda.jit
+def matmul_tiled(A , B , C):
+  M , N , K = A.shape[0] , B.shape[1] , A.shape[1]
+  tx = cuda.threadIdx.x
+  ty = cuda.threadIdx.y
+  bx = cuda.blockIdx.x
+  by = cuda.blockIdx.y
 
+  TILE_M = 16   
+  TILE_N = 16   
+  TILE_K = 16
+
+  row = by * TILE_M + ty
+  col = bx * TILE_N + tx
+  
+  s_A = cuda.shared.array((16 , 16) , dtype = float32)
+  s_B = cuda.shared.array((16 , 16) , dtype = float32)
+  num_tiles = (K + TILE_K - 1) // TILE_K
+  
+  acc = float32(0.0)
+
+  for t in range(num_tiles):
+    k_base = t * TILE_K
+    if row < M and (k_base + tx) < K:
+      s_A[ty , tx] = A[row , k_base + tx]
+    else:
+      s_A[ty , tx] = 0.0
+
+    if (k_base + ty) < K and col < N:
+      s_B[ty , tx] = B[k_base + ty , col]
+    else:
+      s_B[ty , tx] = 0.0
+  
+    cuda.syncthreads()
+
+    for k in range(TILE_K):
+      acc += s_A[ty , k] * s_B[k , tx]
+    cuda.syncthreads()
+
+  if row < M and col < N:
+    C[row , col] = acc
+    
 TIERS = {
     'tiny':   {'shared_size': 32  , 'block_size': 16 , 'use_shared': True}  ,
     'small':  {'shared_size': 48  , 'block_size': 16 , 'use_shared': True}  ,

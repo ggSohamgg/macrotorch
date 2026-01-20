@@ -1428,14 +1428,17 @@ def benchmark_matmul(M, K, N, dtype_name='float32', num_runs=10):
     print(f"    Runs:         {num_runs}")
     
     np.random.seed(42)
+    # Generate data in target dtype
     A = np.random.randn(M, K).astype(np_dtype)
     B = np.random.randn(K, N).astype(np_dtype)
     
-    # NumPy (CPU) - Ground Truth
+    # NumPy (CPU) - Ground Truth (always use FP32 since NumPy has no native FP16 BLAS)
+    A_fp32 = A.astype(np.float32)
+    B_fp32 = B.astype(np.float32)
     times = []
     for _ in range(num_runs):
         start = time.perf_counter()
-        numpy_result = A @ B
+        numpy_result = A_fp32 @ B_fp32
         times.append((time.perf_counter() - start) * 1000)
     numpy_time = np.median(times)
     
@@ -1461,11 +1464,11 @@ def benchmark_matmul(M, K, N, dtype_name='float32', num_runs=10):
             torch.cuda.synchronize()
             times.append(start_event.elapsed_time(end_event))
         pt_time = np.median(times)
-        pt_error = np.abs(pt_result.cpu().numpy().astype(np.float32) - numpy_result.astype(np.float32)).max()
+        pt_error = np.abs(pt_result.cpu().numpy().astype(np.float32) - numpy_result).max()
     
-    # MacroTorch (GPU) - Pre-allocated
-    d_A = cuda.to_device(A.astype(np.float32))
-    d_B = cuda.to_device(B.astype(np.float32))
+    # MacroTorch (GPU) - Pass data in target dtype, kernel handles conversion
+    d_A = cuda.to_device(A)
+    d_B = cuda.to_device(B)
     d_C = cuda.device_array((M, N), dtype=np.float32)
     
     TILE_M, TILE_N = 16, 16
@@ -1500,7 +1503,7 @@ def benchmark_matmul(M, K, N, dtype_name='float32', num_runs=10):
     mt_time = np.median(times)
     
     mt_result = d_C.copy_to_host()
-    mt_error = np.abs(mt_result - numpy_result.astype(np.float32)).max()
+    mt_error = np.abs(mt_result - numpy_result).max()
     
     # Results
     print(f"\n  Results:")

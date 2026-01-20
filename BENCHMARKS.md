@@ -136,28 +136,26 @@ All tests and benchmarks were performed on an **NVIDIA Tesla T4 GPU**.
 
 ## Matrix Multiplication (Tiled)
 
-Tiled matrix multiplication using 16×16 shared memory tiles.
+Tiled matrix multiplication using 16×16 shared memory tiles with FP32 accumulation.
 
-### Small Configuration (256×256 × 256×256, FP32)
+### Small Configuration (256×256 × 256×256)
 
-| Implementation | Time (ms) | Speedup vs CPU | Max Error |
-| :---: | :---: | :---: | :---: |
-| NumPy (CPU) | 0.35 ms | 1.00x | Ground Truth |
-| PyTorch (GPU) | 0.07 ms | 5.07x | `4.20e-05` |
-| MacroTorch (GPU) | 0.17 ms | 2.03x | `0.00e+00` |
+| Precision | NumPy (CPU) | PyTorch (GPU) | MacroTorch (GPU) | MT vs CPU | Max Error |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| **FP32** | 0.31 ms | 0.07 ms | 0.17 ms | **1.79x faster** | `0.00e+00` |
+| **FP16** | 0.36 ms | 0.04 ms | 0.21 ms | **1.73x faster** | `0.00e+00` |
 
-### Large Configuration (1024×1024 × 1024×1024, FP32)
+### Large Configuration (1024×1024 × 1024×1024)
 
-| Implementation | Time (ms) | Speedup vs CPU | Max Error |
-| :---: | :---: | :---: | :---: |
-| NumPy (CPU) | 17.10 ms | 1.00x | Ground Truth |
-| PyTorch (GPU) | 0.86 ms | 19.98x | `9.92e-05` |
-| MacroTorch (GPU) | 5.95 ms | 2.87x | `2.21e-04` |
+| Precision | NumPy (CPU) | PyTorch (GPU) | MacroTorch (GPU) | MT vs CPU | Max Error |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| **FP32** | 17.38 ms | 0.86 ms | 5.95 ms | **2.92x faster** | `2.21e-04` |
+| **FP16** | 17.47 ms | 0.13 ms | 4.80 ms | **3.64x faster** | `1.98e-04` |
 
-> MacroTorch's tiled matmul achieves **2-3x speedup** over CPU. PyTorch uses cuBLAS which is highly optimized for GEMM operations.
+> MacroTorch's tiled matmul achieves **2-4x speedup** over CPU. PyTorch uses cuBLAS/Tensor Cores which are highly optimized for GEMM operations.
 
 > [!NOTE]
-> The matmul kernel achieves **perfect accuracy** (0.00 error) on small matrices and maintains good numerical precision on larger matrices.
+> The matmul kernel achieves **perfect accuracy** (0.00 error) on small matrices. FP16 inputs are converted to FP32 for accumulation, providing better precision than native FP16 compute.
 
 ---
 

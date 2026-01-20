@@ -740,8 +740,14 @@ def main():
     print_header("MATMUL (SMALL) - FP32")
     benchmark_matmul(M=256, K=256, N=256, dtype_name='float32')
     
+    print_header("MATMUL (SMALL) - FP16")
+    benchmark_matmul(M=256, K=256, N=256, dtype_name='float16')
+    
     print_header("MATMUL (LARGE) - FP32")
     benchmark_matmul(M=1024, K=1024, N=1024, dtype_name='float32')
+    
+    print_header("MATMUL (LARGE) - FP16")
+    benchmark_matmul(M=1024, K=1024, N=1024, dtype_name='float16')
     
     print("\n" + "="*80)
     print(" BENCHMARK COMPLETE")

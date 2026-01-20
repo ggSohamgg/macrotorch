@@ -531,13 +531,14 @@ def matmul(A, B, d_A=None, d_B=None, d_C=None):
     
     Performs C = A @ B using a tiled CUDA kernel with shared memory.
     Uses 16x16 tiles for efficient GPU computation.
+    Supports both FP32 and FP16 inputs (uses FP32 accumulation for accuracy).
     
     Parameters
     ----------
     A : numpy.ndarray
-        Input matrix of shape (M, K)
+        Input matrix of shape (M, K), supports float32 or float16
     B : numpy.ndarray
-        Input matrix of shape (K, N)
+        Input matrix of shape (K, N), supports float32 or float16
     d_A : numba.cuda.DeviceNDArray, optional
         Pre-allocated device array for A
     d_B : numba.cuda.DeviceNDArray, optional
@@ -548,15 +549,16 @@ def matmul(A, B, d_A=None, d_B=None, d_C=None):
     Returns
     -------
     numpy.ndarray or numba.cuda.DeviceNDArray
-        Result matrix C of shape (M, N)
+        Result matrix C of shape (M, N) in float32
     """
     if d_A is None:
         assert A.ndim == 2, f"A must be 2D, got shape {A.shape}"
         assert B.ndim == 2, f"B must be 2D, got shape {B.shape}"
         assert A.shape[1] == B.shape[0], f"Inner dimensions must match: A.shape[1]={A.shape[1]} != B.shape[0]={B.shape[0]}"
         
-        d_A = cuda.to_device(A.astype(np.float32))
-        d_B = cuda.to_device(B.astype(np.float32))
+        # Transfer to GPU preserving dtype - kernel handles float32 conversion
+        d_A = cuda.to_device(A)
+        d_B = cuda.to_device(B)
         return_host = True
     else:
         return_host = False

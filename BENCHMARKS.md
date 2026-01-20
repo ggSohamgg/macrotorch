@@ -134,12 +134,40 @@ All tests and benchmarks were performed on an **NVIDIA Tesla T4 GPU**.
 
 ---
 
+## Matrix Multiplication (Tiled)
+
+Tiled matrix multiplication using 16×16 shared memory tiles.
+
+### Small Configuration (256×256 × 256×256, FP32)
+
+| Implementation | Time (ms) | Speedup vs CPU | Max Error |
+| :---: | :---: | :---: | :---: |
+| NumPy (CPU) | 0.35 ms | 1.00x | Ground Truth |
+| PyTorch (GPU) | 0.07 ms | 5.07x | `4.20e-05` |
+| MacroTorch (GPU) | 0.17 ms | 2.03x | `0.00e+00` |
+
+### Large Configuration (1024×1024 × 1024×1024, FP32)
+
+| Implementation | Time (ms) | Speedup vs CPU | Max Error |
+| :---: | :---: | :---: | :---: |
+| NumPy (CPU) | 17.10 ms | 1.00x | Ground Truth |
+| PyTorch (GPU) | 0.86 ms | 19.98x | `9.92e-05` |
+| MacroTorch (GPU) | 5.95 ms | 2.87x | `2.21e-04` |
+
+> MacroTorch's tiled matmul achieves **2-3x speedup** over CPU. PyTorch uses cuBLAS which is highly optimized for GEMM operations.
+
+> [!NOTE]
+> The matmul kernel achieves **perfect accuracy** (0.00 error) on small matrices and maintains good numerical precision on larger matrices.
+
+---
+
 ## Summary
 
 MacroTorch demonstrates:
 - ✅ **10-17x speedup** over CPU for forward/backward passes
 - ✅ **31-66x speedup** over CPU for bias gradient computation
 - ✅ **143-154x speedup** over CPU for weight gradient (large tensors)
+- ✅ **2-3x speedup** over CPU for tiled matrix multiplication
 - ✅ **🏆 2.6x faster than PyTorch** for MaxPool2D backward
 - ✅ **🏆 5.3x faster than PyTorch** for 2D Legacy weight gradient backward
 - ✅ **🏆 2.71x faster than PyTorch** for Softmax backward

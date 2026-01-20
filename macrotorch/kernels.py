@@ -406,14 +406,14 @@ def matmul_tiled(A , B , C):
   for t in range(num_tiles):
     k_base = t * TILE_K
     if row < M and (k_base + tx) < K:
-      s_A[ty , tx] = A[row , k_base + tx]
+      s_A[ty , tx] = float32(A[row , k_base + tx])
     else:
-      s_A[ty , tx] = 0.0
+      s_A[ty , tx] = float32(0.0)
 
     if (k_base + ty) < K and col < N:
-      s_B[ty , tx] = B[k_base + ty , col]
+      s_B[ty , tx] = float32(B[k_base + ty , col])
     else:
-      s_B[ty , tx] = 0.0
+      s_B[ty , tx] = float32(0.0)
   
     cuda.syncthreads()
 
@@ -423,7 +423,7 @@ def matmul_tiled(A , B , C):
 
   if row < M and col < N:
     C[row , col] = acc
-    
+
 TIERS = {
     'tiny':   {'shared_size': 32  , 'block_size': 16 , 'use_shared': True}  ,
     'small':  {'shared_size': 48  , 'block_size': 16 , 'use_shared': True}  ,

@@ -587,6 +587,66 @@ def matmul(A, B, d_A=None, d_B=None, d_C=None):
         return d_C
 
 
+def linear(x, weight, bias=None):
+    """
+    Linear Layer Forward Pass
+    
+    Computes Y = X @ W + b using CUDA matmul kernel.
+    
+    Parameters
+    ----------
+    x : numpy.ndarray
+        Input tensor of shape (B, in_features)
+    weight : numpy.ndarray
+        Weight matrix of shape (in_features, out_features)
+    bias : numpy.ndarray, optional
+        Bias vector of shape (out_features,)
+    
+    Returns
+    -------
+    numpy.ndarray
+        Output tensor of shape (B, out_features)
+    """
+    out = matmul(x, weight)
+    if bias is not None:
+        out = out + bias
+    return out
+
+
+def linear_backward(grad_out, x, weight):
+    """
+    Linear Layer Backward Pass
+    
+    Computes gradients for linear layer.
+    
+    Parameters
+    ----------
+    grad_out : numpy.ndarray
+        Gradient from next layer of shape (B, out_features)
+    x : numpy.ndarray
+        Input from forward pass of shape (B, in_features)
+    weight : numpy.ndarray
+        Weight matrix of shape (in_features, out_features)
+    
+    Returns
+    -------
+    tuple (dX, dW, db)
+        dX : Gradient w.r.t. input of shape (B, in_features)
+        dW : Gradient w.r.t. weight of shape (in_features, out_features)
+        db : Gradient w.r.t. bias of shape (out_features,)
+    """
+    # dW = X.T @ dY
+    dW = matmul(x.T, grad_out)
+    
+    # dX = dY @ W.T
+    dX = matmul(grad_out, weight.T)
+    
+    # db = sum(dY, axis=0)
+    db = np.sum(grad_out, axis=0)
+    
+    return dX, dW, db
+
+
 def cross_entropy_loss(probs, targets, d_probs=None, d_targets=None, d_loss=None):
     """
     Cross-Entropy Loss Forward Pass

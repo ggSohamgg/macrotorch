@@ -9,6 +9,8 @@ from .ops import maxpool2d_backward
 from .ops import softmax_forward
 from .ops import softmax_backward
 from .ops import matmul
+from .ops import linear
+from .ops import linear_backward
 from .ops import cross_entropy_loss
 from .ops import cross_entropy_backward
 from .ops import flatten
@@ -31,6 +33,8 @@ __all__ = [
     'softmax_forward',
     'softmax_backward',
     'matmul',
+    'linear',
+    'linear_backward',
     'cross_entropy_loss',
     'cross_entropy_backward',
     'flatten',

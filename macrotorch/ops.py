@@ -1,7 +1,7 @@
 import numpy as np
 import math
 from numba import cuda
-from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD, MAXPOOL2D_FORWARD, MAXPOOL2D_BACKWARD, SOFTMAX_FORWARD, SOFTMAX_BACKWARD, matmul_tiled
+from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD, MAXPOOL2D_FORWARD, MAXPOOL2D_BACKWARD, SOFTMAX_FORWARD, SOFTMAX_BACKWARD, matmul_tiled, cross_entropy_loss_kernel, cross_entropy_backward_kernel
 
 
 def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=None , d_K=None , d_out=None):
@@ -585,3 +585,170 @@ def matmul(A, B, d_A=None, d_B=None, d_C=None):
         return d_C.copy_to_host()
     else:
         return d_C
+
+
+def cross_entropy_loss(probs, targets, d_probs=None, d_targets=None, d_loss=None):
+    """
+    Cross-Entropy Loss Forward Pass
+    
+    Computes the cross-entropy loss for multi-class classification.
+    
+    Parameters
+    ----------
+    probs : numpy.ndarray
+        Softmax probabilities of shape (B, C) where B is batch size, C is num classes
+    targets : numpy.ndarray
+        Target class indices of shape (B,), integer values in [0, C-1]
+    
+    Returns
+    -------
+    float
+        Mean cross-entropy loss over the batch
+    """
+    B, C = probs.shape
+    
+    if d_probs is None:
+        d_probs = cuda.to_device(probs.astype(np.float32))
+        d_targets = cuda.to_device(targets.astype(np.int32))
+        return_host = True
+    else:
+        return_host = False
+    
+    if d_loss is None:
+        d_loss = cuda.device_array(B, dtype=np.float32)
+    
+    threads_per_block = 256
+    blocks_per_grid = math.ceil(B / threads_per_block)
+    
+    cross_entropy_loss_kernel[blocks_per_grid, threads_per_block](d_probs, d_targets, d_loss, B, C)
+    cuda.synchronize()
+    
+    if return_host:
+        loss = d_loss.copy_to_host()
+        return np.mean(loss)
+    else:
+        return d_loss
+
+
+def cross_entropy_backward(probs, targets, d_probs=None, d_targets=None, d_grad=None):
+    """
+    Cross-Entropy Loss Backward Pass
+    
+    Computes gradient of cross-entropy loss w.r.t. logits (after softmax).
+    
+    Parameters
+    ----------
+    probs : numpy.ndarray
+        Softmax probabilities of shape (B, C)
+    targets : numpy.ndarray
+        Target class indices of shape (B,)
+    
+    Returns
+    -------
+    numpy.ndarray
+        Gradient w.r.t. softmax input of shape (B, C)
+    """
+    B, C = probs.shape
+    
+    if d_probs is None:
+        d_probs = cuda.to_device(probs.astype(np.float32))
+        d_targets = cuda.to_device(targets.astype(np.int32))
+        return_host = True
+    else:
+        return_host = False
+    
+    if d_grad is None:
+        d_grad = cuda.device_array((B, C), dtype=np.float32)
+    
+    threads = (16, 16)
+    blocks_x = math.ceil(B / 16)
+    blocks_y = math.ceil(C / 16)
+    blocks = (blocks_x, blocks_y)
+    
+    cross_entropy_backward_kernel[blocks, threads](d_probs, d_targets, d_grad, B, C)
+    cuda.synchronize()
+    
+    if return_host:
+        return d_grad.copy_to_host()
+    else:
+        return d_grad
+
+
+def flatten(x):
+    """
+    Flatten a tensor from shape (N, C, H, W) to (N, C*H*W)
+    
+    Parameters
+    ----------
+    x : numpy.ndarray
+        Input tensor of shape (N, C, H, W) or any shape
+    
+    Returns
+    -------
+    numpy.ndarray
+        Flattened tensor of shape (N, -1)
+    """
+    if x.ndim == 4:
+        N, C, H, W = x.shape
+        return x.reshape(N, C * H * W)
+    elif x.ndim == 2:
+        return x  # Already flat
+    else:
+        return x.reshape(x.shape[0], -1)
+
+
+def flatten_backward(grad, original_shape):
+    """
+    Reshape gradient back to original shape (unflatten)
+    
+    Parameters
+    ----------
+    grad : numpy.ndarray
+        Gradient of shape (N, C*H*W)
+    original_shape : tuple
+        Original shape (N, C, H, W)
+    
+    Returns
+    -------
+    numpy.ndarray
+        Gradient reshaped to original_shape
+    """
+    return grad.reshape(original_shape)
+
+
+class SGD:
+    """
+    Stochastic Gradient Descent Optimizer (without momentum)
+    
+    Parameters
+    ----------
+    params : list of numpy.ndarray
+        List of parameters to optimize
+    lr : float
+        Learning rate (default: 0.01)
+    
+    Example
+    -------
+    >>> optimizer = SGD([W1, b1, W2, b2], lr=0.01)
+    >>> # After computing gradients
+    >>> optimizer.step([dW1, db1, dW2, db2])
+    """
+    def __init__(self, params, lr=0.01):
+        self.params = params
+        self.lr = lr
+    
+    def step(self, grads):
+        """
+        Update parameters using gradients
+        
+        Parameters
+        ----------
+        grads : list of numpy.ndarray
+            List of gradients corresponding to each parameter
+        """
+        for param, grad in zip(self.params, grads):
+            param -= self.lr * grad
+    
+    def zero_grad(self):
+        """Placeholder for compatibility - gradients are computed fresh each iteration"""
+        pass

@@ -19,8 +19,8 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
-from macrotorch import conv2d_forward, conv2d_input_backward, conv2d_bias_backward, conv2d_weight_backward, Conv2d, relu, relu_backward, maxpool2d_forward, softmax_forward, softmax_backward, matmul
-from macrotorch.kernels import WEIGHT_KERNEL, RELU_FORWARD, MAXPOOL2D_FORWARD, SOFTMAX_FORWARD, SOFTMAX_BACKWARD, matmul_tiled
+from macrotorch import conv2d_forward, conv2d_input_backward, conv2d_bias_backward, conv2d_weight_backward, Conv2d, relu, relu_backward, maxpool2d_forward, softmax_forward, softmax_backward, matmul, cross_entropy_loss, cross_entropy_backward
+from macrotorch.kernels import WEIGHT_KERNEL, RELU_FORWARD, MAXPOOL2D_FORWARD, SOFTMAX_FORWARD, SOFTMAX_BACKWARD, matmul_tiled, cross_entropy_loss_kernel, cross_entropy_backward_kernel
 import math
 
 
@@ -748,6 +748,13 @@ def main():
     
     print_header("MATMUL (LARGE) - FP16")
     benchmark_matmul(M=1024, K=1024, N=1024, dtype_name='float16')
+    
+    # Cross-Entropy Benchmarks
+    print_header("CROSS-ENTROPY (SMALL) - FP32")
+    benchmark_cross_entropy(B=32, C=10, dtype_name='float32')
+    
+    print_header("CROSS-ENTROPY (LARGE) - FP32")
+    benchmark_cross_entropy(B=256, C=1000, dtype_name='float32')
     
     print("\n" + "="*80)
     print(" BENCHMARK COMPLETE")
@@ -1522,6 +1529,178 @@ def benchmark_matmul(M, K, N, dtype_name='float32', num_runs=10):
             print(f"\n  MacroTorch vs PyTorch: {speedup:.2f}x faster")
         else:
             print(f"\n  MacroTorch vs PyTorch: {1/speedup:.2f}x slower")
+
+
+def benchmark_cross_entropy(B, C, dtype_name='float32', num_runs=10):
+    """Benchmark cross-entropy loss forward and backward."""
+    np_dtype = np.float32
+    
+    print(f"\n  Configuration:")
+    print(f"    Batch Size:   {B}")
+    print(f"    Classes:      {C}")
+    print(f"    Precision:    {dtype_name.upper()}")
+    print(f"    Runs:         {num_runs}")
+    
+    np.random.seed(42)
+    # Generate random logits and targets
+    logits = np.random.randn(B, C).astype(np_dtype)
+    targets = np.random.randint(0, C, size=B).astype(np.int64)
+    
+    # Compute softmax for probs
+    def numpy_softmax(x):
+        x_max = x.max(axis=1, keepdims=True)
+        exp_x = np.exp(x - x_max)
+        return exp_x / exp_x.sum(axis=1, keepdims=True)
+    
+    probs = numpy_softmax(logits)
+    
+    # NumPy (CPU) - Ground Truth Forward
+    def numpy_cross_entropy(probs, targets):
+        B = probs.shape[0]
+        log_probs = -np.log(probs[np.arange(B), targets] + 1e-8)
+        return np.mean(log_probs)
+    
+    times = []
+    for _ in range(num_runs):
+        start = time.perf_counter()
+        numpy_loss = numpy_cross_entropy(probs, targets)
+        times.append((time.perf_counter() - start) * 1000)
+    numpy_fwd_time = np.median(times)
+    
+    # NumPy (CPU) - Ground Truth Backward
+    def numpy_cross_entropy_backward(probs, targets):
+        B = probs.shape[0]
+        grad = probs.copy()
+        grad[np.arange(B), targets] -= 1.0
+        return grad / B
+    
+    times = []
+    for _ in range(num_runs):
+        start = time.perf_counter()
+        numpy_grad = numpy_cross_entropy_backward(probs, targets)
+        times.append((time.perf_counter() - start) * 1000)
+    numpy_bwd_time = np.median(times)
+    
+    # PyTorch (GPU)
+    pt_fwd_time, pt_bwd_time = None, None
+    if TORCH_AVAILABLE:
+        t_logits = torch.from_numpy(logits).cuda().requires_grad_(True)
+        t_targets = torch.from_numpy(targets.astype(np.int64)).cuda()
+        
+        # Warmup
+        for _ in range(5):
+            loss = torch.nn.functional.cross_entropy(t_logits, t_targets)
+            loss.backward()
+            t_logits.grad = None
+        torch.cuda.synchronize()
+        
+        # Forward timing
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        times = []
+        for _ in range(num_runs):
+            start_event.record()
+            pt_loss = torch.nn.functional.cross_entropy(t_logits, t_targets)
+            end_event.record()
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))
+        pt_fwd_time = np.median(times)
+        
+        # Backward timing
+        times = []
+        for _ in range(num_runs):
+            t_logits.grad = None
+            pt_loss = torch.nn.functional.cross_entropy(t_logits, t_targets)
+            start_event.record()
+            pt_loss.backward()
+            end_event.record()
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))
+        pt_bwd_time = np.median(times)
+        
+        pt_grad = t_logits.grad.cpu().numpy()
+    
+    # MacroTorch (GPU) Forward
+    probs_2d = probs.astype(np.float32)
+    targets_int = targets.astype(np.int32)
+    
+    # Warmup
+    for _ in range(5):
+        _ = cross_entropy_loss(probs_2d, targets_int)
+    cuda.synchronize()
+    
+    if TORCH_AVAILABLE:
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        times = []
+        for _ in range(num_runs):
+            start_event.record()
+            mt_loss = cross_entropy_loss(probs_2d, targets_int)
+            end_event.record()
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))
+    else:
+        times = []
+        for _ in range(num_runs):
+            start = time.perf_counter()
+            mt_loss = cross_entropy_loss(probs_2d, targets_int)
+            cuda.synchronize()
+            times.append((time.perf_counter() - start) * 1000)
+    mt_fwd_time = np.median(times)
+    
+    # MacroTorch (GPU) Backward
+    for _ in range(5):
+        _ = cross_entropy_backward(probs_2d, targets_int)
+    cuda.synchronize()
+    
+    if TORCH_AVAILABLE:
+        times = []
+        for _ in range(num_runs):
+            start_event.record()
+            mt_grad = cross_entropy_backward(probs_2d, targets_int)
+            end_event.record()
+            torch.cuda.synchronize()
+            times.append(start_event.elapsed_time(end_event))
+    else:
+        times = []
+        for _ in range(num_runs):
+            start = time.perf_counter()
+            mt_grad = cross_entropy_backward(probs_2d, targets_int)
+            cuda.synchronize()
+            times.append((time.perf_counter() - start) * 1000)
+    mt_bwd_time = np.median(times)
+    
+    # Compute errors
+    loss_error = abs(mt_loss - numpy_loss)
+    grad_error = np.abs(mt_grad - numpy_grad).max()
+    
+    # Results
+    print(f"\n  Forward Pass:")
+    print(f"  {'-'*74}")
+    print(f"  {'Implementation':<18} | {'Time (ms)':<12} | {'Speedup':<10} | {'Loss Error':<12}")
+    print(f"  {'-'*74}")
+    print(f"  {'NumPy (CPU)':<18} | {numpy_fwd_time:<12.4f} | {'1.00x':<10} | {'Ground Truth':<12}")
+    if TORCH_AVAILABLE:
+        print(f"  {'PyTorch (GPU)':<18} | {pt_fwd_time:<12.4f} | {f'{numpy_fwd_time/pt_fwd_time:.2f}x':<10} | {'~0':<12}")
+    print(f"  {'MacroTorch (GPU)':<18} | {mt_fwd_time:<12.4f} | {f'{numpy_fwd_time/mt_fwd_time:.2f}x':<10} | {f'{loss_error:.2e}':<12}")
+    print(f"  {'-'*74}")
+    
+    print(f"\n  Backward Pass:")
+    print(f"  {'-'*74}")
+    print(f"  {'Implementation':<18} | {'Time (ms)':<12} | {'Speedup':<10} | {'Grad Error':<12}")
+    print(f"  {'-'*74}")
+    print(f"  {'NumPy (CPU)':<18} | {numpy_bwd_time:<12.4f} | {'1.00x':<10} | {'Ground Truth':<12}")
+    if TORCH_AVAILABLE:
+        print(f"  {'PyTorch (GPU)':<18} | {pt_bwd_time:<12.4f} | {f'{numpy_bwd_time/pt_bwd_time:.2f}x':<10} | {'~0':<12}")
+    print(f"  {'MacroTorch (GPU)':<18} | {mt_bwd_time:<12.4f} | {f'{numpy_bwd_time/mt_bwd_time:.2f}x':<10} | {f'{grad_error:.2e}':<12}")
+    print(f"  {'-'*74}")
+    
+    if TORCH_AVAILABLE:
+        fwd_speedup = pt_fwd_time / mt_fwd_time
+        bwd_speedup = pt_bwd_time / mt_bwd_time
+        print(f"\n  MacroTorch vs PyTorch: Forward {fwd_speedup:.2f}x {'faster' if fwd_speedup > 1 else 'slower'}, Backward {bwd_speedup:.2f}x {'faster' if bwd_speedup > 1 else 'slower'}")
 
 
 if __name__ == "__main__":

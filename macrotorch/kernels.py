@@ -424,6 +424,29 @@ def matmul_tiled(A , B , C):
   if row < M and col < N:
     C[row , col] = acc
 
+@cuda.jit
+def cross_entropy_loss_kernel(probs, targets, loss_out, B, C):
+    i = cuda.grid(1)
+    
+    if i < B:
+        target_class = targets[i]
+        prob_target = probs[i, target_class]
+        loss_out[i] = -math.log(prob_target + 1e-8)
+
+
+@cuda.jit
+def cross_entropy_backward_kernel(probs, targets, grad, B, C):
+    i = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
+    c = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y
+    
+    if i < B and c < C:
+        target_class = targets[i]
+        if c == target_class:
+            grad[i, c] = (probs[i, c] - 1.0) / B
+        else:
+            grad[i, c] = probs[i, c] / B
+
+
 TIERS = {
     'tiny':   {'shared_size': 32  , 'block_size': 16 , 'use_shared': True}  ,
     'small':  {'shared_size': 48  , 'block_size': 16 , 'use_shared': True}  ,

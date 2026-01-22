@@ -19,7 +19,7 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
-from macrotorch import conv2d_forward, conv2d_input_backward, conv2d_bias_backward, conv2d_weight_backward, Conv2d, relu, relu_backward, maxpool2d_forward, softmax_forward, softmax_backward, matmul, cross_entropy_loss, cross_entropy_backward
+from macrotorch import conv2d_forward, conv2d_input_backward, conv2d_bias_backward, conv2d_weight_backward, Conv2d, relu, relu_backward, maxpool2d_forward, softmax_forward, softmax_backward, matmul, cross_entropy_loss, cross_entropy_backward, to_device, is_device_array
 from macrotorch.kernels import WEIGHT_KERNEL, RELU_FORWARD, MAXPOOL2D_FORWARD, SOFTMAX_FORWARD, SOFTMAX_BACKWARD, matmul_tiled, cross_entropy_loss_kernel, cross_entropy_backward_kernel
 import math
 
@@ -120,9 +120,14 @@ def benchmark_forward(dtype_name='float32', num_runs=10):
         pt_std = np.std(times)
         pt_error = np.abs(pt_out.cpu().numpy().astype(np.float32) - scipy_out).max()
     
-    # MacroTorch (GPU)
+    # MacroTorch (GPU) - with GPU-persistent mode
+    d_A = to_device(A)
+    d_K = to_device(K)
+    
+    # Warmup with return_device=True
     for _ in range(5):
-        _ = conv2d_forward(A, K, padding=padding, bias=bias)
+        _ = conv2d_forward(d_A, d_K, padding=padding, bias=bias, return_device=True)
+    cuda.synchronize()
     
     if TORCH_AVAILABLE:
         start_event = torch.cuda.Event(enable_timing=True)
@@ -131,7 +136,7 @@ def benchmark_forward(dtype_name='float32', num_runs=10):
         times = []
         for _ in range(num_runs):
             start_event.record()
-            mt_out = conv2d_forward(A, K, padding=padding, bias=bias)
+            d_out = conv2d_forward(d_A, d_K, padding=padding, bias=bias, return_device=True)
             end_event.record()
             torch.cuda.synchronize()
             times.append(start_event.elapsed_time(end_event))
@@ -139,10 +144,12 @@ def benchmark_forward(dtype_name='float32', num_runs=10):
         times = []
         for _ in range(num_runs):
             start = time.perf_counter()
-            mt_out = conv2d_forward(A, K, padding=padding, bias=bias)
+            d_out = conv2d_forward(d_A, d_K, padding=padding, bias=bias, return_device=True)
+            cuda.synchronize()
             times.append((time.perf_counter() - start) * 1000)
     mt_time = np.median(times)
     mt_std = np.std(times)
+    mt_out = d_out.copy_to_host()
     mt_error = np.abs(mt_out - scipy_out).max()
     
     # Results
@@ -243,9 +250,13 @@ def benchmark_input_backward(dtype_name='float32', num_runs=10):
         pt_out_np = pt_result.cpu().numpy().astype(np.float32)
         pt_error = np.abs(pt_out_np - scipy_result).max()
     
-    # MacroTorch (GPU)
+    # MacroTorch (GPU) - with GPU-persistent mode
+    d_grad_out = to_device(grad_out)
+    d_K = to_device(K)
+    
     for _ in range(5):
-        _ = conv2d_input_backward(grad_out, K, padding=padding)
+        _ = conv2d_input_backward(d_grad_out, d_K, padding=padding, return_device=True)
+    cuda.synchronize()
     
     if TORCH_AVAILABLE:
         start_event = torch.cuda.Event(enable_timing=True)
@@ -254,7 +265,7 @@ def benchmark_input_backward(dtype_name='float32', num_runs=10):
         times = []
         for _ in range(num_runs):
             start_event.record()
-            grad_input = conv2d_input_backward(grad_out, K, padding=padding)
+            d_grad_input = conv2d_input_backward(d_grad_out, d_K, padding=padding, return_device=True)
             end_event.record()
             torch.cuda.synchronize()
             times.append(start_event.elapsed_time(end_event))
@@ -262,10 +273,12 @@ def benchmark_input_backward(dtype_name='float32', num_runs=10):
         times = []
         for _ in range(num_runs):
             start = time.perf_counter()
-            grad_input = conv2d_input_backward(grad_out, K, padding=padding)
+            d_grad_input = conv2d_input_backward(d_grad_out, d_K, padding=padding, return_device=True)
+            cuda.synchronize()
             times.append((time.perf_counter() - start) * 1000)
     mt_time = np.median(times)
     mt_std = np.std(times)
+    grad_input = d_grad_input.copy_to_host()
     mt_error = np.abs(grad_input - scipy_result).max()
     
     # Results

@@ -20,7 +20,7 @@ from .ops import is_device_array
 from .ops import to_device
 from .layers import Conv2d
 
-__version__ = "0.9.0"
+__version__ = "1.0.0"
 
 __all__ = [
     'Conv2d',

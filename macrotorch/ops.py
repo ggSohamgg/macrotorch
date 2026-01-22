@@ -1,33 +1,58 @@
 import numpy as np
 import math
 from numba import cuda
+from numba.cuda.cudadrv.devicearray import DeviceNDArray
 from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD, MAXPOOL2D_FORWARD, MAXPOOL2D_BACKWARD, SOFTMAX_FORWARD, SOFTMAX_BACKWARD, matmul_tiled, cross_entropy_loss_kernel, cross_entropy_backward_kernel
 
 
-def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=None , d_K=None , d_out=None):
+def is_device_array(x):
+    """Check if x is a CUDA device array"""
+    return isinstance(x, DeviceNDArray)
+
+
+def to_device(x):
+    """Transfer array to GPU if not already there"""
+    if is_device_array(x):
+        return x
+    return cuda.to_device(x)
+
+
+def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=None , d_K=None , d_out=None, return_device=False):
     """
     2D Convolution Forward Pass (Multi-Channel Batched)
     
     Parameters
     ----------
-    A : numpy.ndarray
+    A : numpy.ndarray or DeviceNDArray
         Input tensor of shape (N, C_in, H, W).
-    K : numpy.ndarray
+    K : numpy.ndarray or DeviceNDArray
         Kernel tensor of shape (C_out, C_in, Kh, Kw).
     padding : int
         Zero-padding added to both sides of the input.
     bias : numpy.ndarray or None
         Bias tensor of shape (C_out,).
+    return_device : bool
+        If True, return device array (stays on GPU). Default: False
     """
-    assert A.ndim == 4 , f"A must be 4D (N, C, H, W), got shape {A.shape}"
-    assert K.ndim == 4 , f"K must be 4D (Cout, Cin, Kh, Kw), got shape {K.shape}"
+    # Handle device arrays
+    if is_device_array(A):
+        N, Cin, H, W = A.shape
+        a_dtype = np.float32
+    else:
+        assert A.ndim == 4 , f"A must be 4D (N, C, H, W), got shape {A.shape}"
+        N, Cin, H, W = A.shape
+        a_dtype = A.dtype
     
-    N, Cin, H, W = A.shape
-    Cout, Cin_K, Kh, Kw = K.shape
+    if is_device_array(K):
+        Cout, Cin_K, Kh, Kw = K.shape
+    else:
+        assert K.ndim == 4 , f"K must be 4D (Cout, Cin, Kh, Kw), got shape {K.shape}"
+        Cout, Cin_K, Kh, Kw = K.shape
+    
     assert Cin == Cin_K, f"Input channels {Cin} must match kernel in_channels {Cin_K}"
 
     if dtype == "auto":
-        dtype = 'fp16' if A.dtype == np.float16 else 'fp32'
+        dtype = 'fp16' if a_dtype == np.float16 else 'fp32'
     
     max_k = max(Kh , Kw)
     
@@ -54,17 +79,16 @@ def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=Non
     out_w = W - Kw + 1 + (2 * padding)
     
     if d_A is None:
-        d_A = cuda.to_device(A)
+        d_A = to_device(A)
     if d_K is None:
-        d_K = cuda.to_device(K)
+        d_K = to_device(K)
     
     if bias is None:
-        bias = np.zeros(Cout, dtype=A.dtype)
-    d_bias = cuda.to_device(bias)
+        bias = np.zeros(Cout, dtype=np.float32)
+    d_bias = to_device(bias)
 
     if d_out is None:
-        out = np.zeros((N, Cout, out_h , out_w) , dtype=np.float32)
-        d_out = cuda.to_device(out)
+        d_out = cuda.device_array((N, Cout, out_h , out_w) , dtype=np.float32)
     
     threads_per_block = (block_size , block_size)
     blocks_y = math.ceil(out_h / block_size)  
@@ -76,22 +100,38 @@ def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=Non
     kernel[blocks_per_grid , threads_per_block](d_A , d_K , d_out, padding, d_bias)
     
     cuda.synchronize()
+    
+    if return_device:
+        return d_out
     return d_out.copy_to_host()
 
 
-def input_backward(grad_out, K, padding=0, dtype='auto', verbose=False):
+def input_backward(grad_out, K, padding=0, dtype='auto', verbose=False, return_device=False):
     """
     2D Convolution Backward Pass (Input Gradient - Multi-Channel Batched)
     """
-    assert grad_out.ndim == 4
-    assert K.ndim == 4
+    if is_device_array(grad_out):
+        N, Cout, out_h, out_w = grad_out.shape
+        d_grad_out = grad_out
+        g_dtype = np.float32
+    else:
+        assert grad_out.ndim == 4
+        N, Cout, out_h, out_w = grad_out.shape
+        d_grad_out = cuda.to_device(grad_out)
+        g_dtype = grad_out.dtype
     
-    N, Cout, out_h, out_w = grad_out.shape
-    Cout_K, Cin, Kh, Kw = K.shape
+    if is_device_array(K):
+        Cout_K, Cin, Kh, Kw = K.shape
+        d_K = K
+    else:
+        assert K.ndim == 4
+        Cout_K, Cin, Kh, Kw = K.shape
+        d_K = cuda.to_device(K)
+    
     assert Cout == Cout_K
     
     if dtype == "auto":
-        dtype = 'fp16' if grad_out.dtype == np.float16 else 'fp32'
+        dtype = 'fp16' if g_dtype == np.float16 else 'fp32'
         
     H_in = out_h + Kh - 1 - (2 * padding)
     W_in = out_w + Kw - 1 - (2 * padding)
@@ -112,11 +152,7 @@ def input_backward(grad_out, K, padding=0, dtype='auto', verbose=False):
     config = TIERS[tier]
     block_size = config['block_size']
     
-    grad_A = np.zeros((N, Cin, H_in, W_in), dtype=np.float32)
-    
-    d_grad_out = cuda.to_device(grad_out)
-    d_K = cuda.to_device(K)
-    d_grad_A = cuda.to_device(grad_A)
+    d_grad_A = cuda.device_array((N, Cin, H_in, W_in), dtype=np.float32)
     
     threads_per_block = (block_size, block_size)
     blocks_y = math.ceil(H_in / block_size)
@@ -128,6 +164,9 @@ def input_backward(grad_out, K, padding=0, dtype='auto', verbose=False):
     kernel[blocks_per_grid, threads_per_block](d_grad_out, d_K, padding, d_grad_A)
     
     cuda.synchronize()
+    
+    if return_device:
+        return d_grad_A
     return d_grad_A.copy_to_host()
 
 
@@ -239,7 +278,7 @@ def bias_backward(grad_out, dtype='auto', verbose=False, d_grad_out=None, d_grad
         return d_grad_bias
 
 
-def relu(x, d_x=None, d_out=None):
+def relu(x, d_x=None, d_out=None, return_device=False):
     """
     ReLU Forward Pass
     
@@ -247,12 +286,14 @@ def relu(x, d_x=None, d_out=None):
     
     Parameters
     ----------
-    x : numpy.ndarray
+    x : numpy.ndarray or DeviceNDArray
         Input array of any shape
     d_x : numba.cuda.DeviceNDArray, optional
         Pre-allocated device input array
     d_out : numba.cuda.DeviceNDArray, optional
         Pre-allocated device output array
+    return_device : bool
+        If True, return device array. Default: False
         
     Returns
     -------
@@ -260,13 +301,10 @@ def relu(x, d_x=None, d_out=None):
         ReLU output with same shape as input
     """
     if d_x is None:
-        d_x = cuda.to_device(x)
-        return_host = True
-    else:
-        return_host = False
+        d_x = to_device(x)
     
     if d_out is None:
-        d_out = cuda.device_array(d_x.shape, dtype=d_x.dtype)
+        d_out = cuda.device_array(d_x.shape, dtype=np.float32)
     
     # 1D grid for element-wise operation
     threads_per_block = 256
@@ -275,13 +313,12 @@ def relu(x, d_x=None, d_out=None):
     RELU_FORWARD[blocks_per_grid, threads_per_block](d_x, d_out)
     cuda.synchronize()
     
-    if return_host:
-        return d_out.copy_to_host()
-    else:
+    if return_device:
         return d_out
+    return d_out.copy_to_host()
 
 
-def relu_backward(x, grad_out, d_x=None, d_grad_out=None, d_grad_in=None):
+def relu_backward(x, grad_out, d_x=None, d_grad_out=None, d_grad_in=None, return_device=False):
     """
     ReLU Backward Pass
     
@@ -289,9 +326,9 @@ def relu_backward(x, grad_out, d_x=None, d_grad_out=None, d_grad_in=None):
     
     Parameters
     ----------
-    x : numpy.ndarray
+    x : numpy.ndarray or DeviceNDArray
         Original input to ReLU (before ReLU was applied)
-    grad_out : numpy.ndarray
+    grad_out : numpy.ndarray or DeviceNDArray
         Gradient from downstream layer
     d_x : numba.cuda.DeviceNDArray, optional
         Pre-allocated device input array
@@ -299,6 +336,8 @@ def relu_backward(x, grad_out, d_x=None, d_grad_out=None, d_grad_in=None):
         Pre-allocated device gradient output array
     d_grad_in : numba.cuda.DeviceNDArray, optional
         Pre-allocated device gradient input array
+    return_device : bool
+        If True, return device array. Default: False
         
     Returns
     -------
@@ -306,13 +345,10 @@ def relu_backward(x, grad_out, d_x=None, d_grad_out=None, d_grad_in=None):
         Gradient with respect to input
     """
     if d_x is None:
-        d_x = cuda.to_device(x)
-        return_host = True
-    else:
-        return_host = False
+        d_x = to_device(x)
     
     if d_grad_out is None:
-        d_grad_out = cuda.to_device(grad_out)
+        d_grad_out = to_device(grad_out)
     
     if d_grad_in is None:
         d_grad_in = cuda.device_array(d_x.shape, dtype=np.float32)
@@ -324,13 +360,12 @@ def relu_backward(x, grad_out, d_x=None, d_grad_out=None, d_grad_in=None):
     RELU_BACKWARD[blocks_per_grid, threads_per_block](d_x, d_grad_out, d_grad_in)
     cuda.synchronize()
     
-    if return_host:
-        return d_grad_in.copy_to_host()
-    else:
+    if return_device:
         return d_grad_in
+    return d_grad_in.copy_to_host()
 
 
-def softmax_forward(x, d_x=None, d_out=None):
+def softmax_forward(x, d_x=None, d_out=None, return_device=False):
     """
     Softmax Forward Pass (4D Multi-Channel)
     
@@ -338,21 +373,23 @@ def softmax_forward(x, d_x=None, d_out=None):
     
     Parameters
     ----------
-    x : numpy.ndarray
+    x : numpy.ndarray or DeviceNDArray
         Input logits of shape (N, C, H, W)
+    return_device : bool
+        If True, return device array. Default: False
         
     Returns
     -------
-    numpy.ndarray
+    numpy.ndarray or DeviceNDArray
         Softmax probabilities of shape (N, C, H, W)
     """
-    N, C, H, W = x.shape
-    
-    if d_x is None:
-        d_x = cuda.to_device(x.astype(np.float32))
-        return_host = True
+    if is_device_array(x):
+        N, C, H, W = x.shape
+        d_x = x
     else:
-        return_host = False
+        N, C, H, W = x.shape
+        if d_x is None:
+            d_x = cuda.to_device(x.astype(np.float32))
     
     if d_out is None:
         d_out = cuda.device_array((N, C, H, W), dtype=np.float32)
@@ -366,10 +403,9 @@ def softmax_forward(x, d_x=None, d_out=None):
     SOFTMAX_FORWARD[blocks, threads](d_x, d_out)
     cuda.synchronize()
     
-    if return_host:
-        return d_out.copy_to_host()
-    else:
+    if return_device:
         return d_out
+    return d_out.copy_to_host()
 
 def softmax_backward(grad_out, probs, d_grad_out=None, d_probs=None, d_grad_logits=None):
     """
@@ -424,7 +460,7 @@ def softmax_backward(grad_out, probs, d_grad_out=None, d_probs=None, d_grad_logi
         return d_grad_logits
 
 
-def maxpool2d_forward(x, pool_size=2, d_x=None, d_out=None, d_indices=None):
+def maxpool2d_forward(x, pool_size=2, d_x=None, d_out=None, d_indices=None, return_device=False):
     """
     MaxPool2D Forward Pass (4D Multi-Channel)
     
@@ -432,28 +468,31 @@ def maxpool2d_forward(x, pool_size=2, d_x=None, d_out=None, d_indices=None):
     
     Parameters
     ----------
-    x : numpy.ndarray
+    x : numpy.ndarray or DeviceNDArray
         Input array of shape (N, C, H, W)
     pool_size : int
         Size of pooling window (default: 2)
+    return_device : bool
+        If True, return device arrays. Default: False
         
     Returns
     -------
-    tuple(numpy.ndarray, numpy.ndarray)
+    tuple(array, array)
         (output, indices) - pooled output (N, C, H_out, W_out) and max indices for backward pass
     """
-    N, C, H, W = x.shape
+    if is_device_array(x):
+        N, C, H, W = x.shape
+        d_x = x
+    else:
+        N, C, H, W = x.shape
+        if d_x is None:
+            d_x = cuda.to_device(x)
+    
     H_out = H // pool_size
     W_out = W // pool_size
     
-    if d_x is None:
-        d_x = cuda.to_device(x)
-        return_host = True
-    else:
-        return_host = False
-    
     if d_out is None:
-        d_out = cuda.device_array((N, C, H_out, W_out), dtype=x.dtype)
+        d_out = cuda.device_array((N, C, H_out, W_out), dtype=np.float32)
     
     if d_indices is None:
         d_indices = cuda.device_array((N, C, H_out, W_out), dtype=np.int32)
@@ -467,13 +506,12 @@ def maxpool2d_forward(x, pool_size=2, d_x=None, d_out=None, d_indices=None):
     MAXPOOL2D_FORWARD[blocks, threads](d_x, d_out, d_indices, pool_size)
     cuda.synchronize()
     
-    if return_host:
-        return d_out.copy_to_host(), d_indices.copy_to_host()
-    else:
+    if return_device:
         return d_out, d_indices
+    return d_out.copy_to_host(), d_indices.copy_to_host()
 
 
-def maxpool2d_backward(grad_out, indices, input_shape, pool_size=2, d_grad_out=None, d_indices=None, d_grad_in=None):
+def maxpool2d_backward(grad_out, indices, input_shape, pool_size=2, d_grad_out=None, d_indices=None, d_grad_in=None, return_device=False):
     """
     MaxPool2D Backward Pass (4D Multi-Channel)
     
@@ -481,34 +519,37 @@ def maxpool2d_backward(grad_out, indices, input_shape, pool_size=2, d_grad_out=N
     
     Parameters
     ----------
-    grad_out : numpy.ndarray
+    grad_out : numpy.ndarray or DeviceNDArray
         Gradient from next layer of shape (N, C, H_out, W_out)
-    indices : numpy.ndarray
+    indices : numpy.ndarray or DeviceNDArray
         Indices from forward pass of shape (N, C, H_out, W_out)
     input_shape : tuple
         Shape of original input (N, C, H, W)
     pool_size : int
         Size of pooling window (default: 2)
+    return_device : bool
+        If True, return device array. Default: False
         
     Returns
     -------
-    numpy.ndarray
+    numpy.ndarray or DeviceNDArray
         Gradient w.r.t. input of shape (N, C, H, W)
     """
-    N, C, H_out, W_out = grad_out.shape
-    
-    if d_grad_out is None:
-        d_grad_out = cuda.to_device(grad_out)
-        return_host = True
+    if is_device_array(grad_out):
+        N, C, H_out, W_out = grad_out.shape
+        d_grad_out = grad_out
     else:
-        return_host = False
+        N, C, H_out, W_out = grad_out.shape
+        if d_grad_out is None:
+            d_grad_out = cuda.to_device(grad_out)
     
     if d_indices is None:
-        d_indices = cuda.to_device(indices)
+        d_indices = to_device(indices)
     
     if d_grad_in is None:
         d_grad_in = cuda.device_array(input_shape, dtype=np.float32)
-        d_grad_in[:] = 0.0
+        # Zero initialize
+        cuda.to_device(np.zeros(input_shape, dtype=np.float32), to=d_grad_in)
     
     threads = (16, 16)
     blocks_x = math.ceil(W_out / 16)
@@ -519,13 +560,12 @@ def maxpool2d_backward(grad_out, indices, input_shape, pool_size=2, d_grad_out=N
     MAXPOOL2D_BACKWARD[blocks, threads](d_grad_out, d_indices, d_grad_in, pool_size)
     cuda.synchronize()
     
-    if return_host:
-        return d_grad_in.copy_to_host()
-    else:
+    if return_device:
         return d_grad_in
+    return d_grad_in.copy_to_host()
 
 
-def matmul(A, B, d_A=None, d_B=None, d_C=None):
+def matmul(A, B, d_A=None, d_B=None, d_C=None, return_device=False):
     """
     Tiled Matrix Multiplication using CUDA
     
@@ -535,9 +575,9 @@ def matmul(A, B, d_A=None, d_B=None, d_C=None):
     
     Parameters
     ----------
-    A : numpy.ndarray
+    A : numpy.ndarray or DeviceNDArray
         Input matrix of shape (M, K), supports float32 or float16
-    B : numpy.ndarray
+    B : numpy.ndarray or DeviceNDArray
         Input matrix of shape (K, N), supports float32 or float16
     d_A : numba.cuda.DeviceNDArray, optional
         Pre-allocated device array for A
@@ -545,6 +585,8 @@ def matmul(A, B, d_A=None, d_B=None, d_C=None):
         Pre-allocated device array for B
     d_C : numba.cuda.DeviceNDArray, optional
         Pre-allocated device output array
+    return_device : bool
+        If True, return device array. Default: False
         
     Returns
     -------
@@ -552,16 +594,9 @@ def matmul(A, B, d_A=None, d_B=None, d_C=None):
         Result matrix C of shape (M, N) in float32
     """
     if d_A is None:
-        assert A.ndim == 2, f"A must be 2D, got shape {A.shape}"
-        assert B.ndim == 2, f"B must be 2D, got shape {B.shape}"
-        assert A.shape[1] == B.shape[0], f"Inner dimensions must match: A.shape[1]={A.shape[1]} != B.shape[0]={B.shape[0]}"
-        
-        # Transfer to GPU preserving dtype - kernel handles float32 conversion
-        d_A = cuda.to_device(A)
-        d_B = cuda.to_device(B)
-        return_host = True
-    else:
-        return_host = False
+        d_A = to_device(A)
+    if d_B is None:
+        d_B = to_device(B)
     
     M, K = d_A.shape
     _, N = d_B.shape
@@ -581,13 +616,12 @@ def matmul(A, B, d_A=None, d_B=None, d_C=None):
     matmul_tiled[blocks_per_grid, threads_per_block](d_A, d_B, d_C)
     cuda.synchronize()
     
-    if return_host:
-        return d_C.copy_to_host()
-    else:
+    if return_device:
         return d_C
+    return d_C.copy_to_host()
 
 
-def linear(x, weight, bias=None):
+def linear(x, weight, bias=None, return_device=False):
     """
     Linear Layer Forward Pass
     
@@ -595,25 +629,33 @@ def linear(x, weight, bias=None):
     
     Parameters
     ----------
-    x : numpy.ndarray
+    x : numpy.ndarray or DeviceNDArray
         Input tensor of shape (B, in_features)
-    weight : numpy.ndarray
+    weight : numpy.ndarray or DeviceNDArray
         Weight matrix of shape (in_features, out_features)
     bias : numpy.ndarray, optional
         Bias vector of shape (out_features,)
+    return_device : bool
+        If True, return device array. Default: False
     
     Returns
     -------
-    numpy.ndarray
+    numpy.ndarray or DeviceNDArray
         Output tensor of shape (B, out_features)
     """
-    out = matmul(x, weight)
+    out = matmul(x, weight, return_device=return_device)
     if bias is not None:
-        out = out + bias
+        if return_device:
+            # Add bias on CPU for simplicity (bias is small)
+            out_host = out.copy_to_host()
+            out_host = out_host + bias
+            return cuda.to_device(out_host)
+        else:
+            out = out + bias
     return out
 
 
-def linear_backward(grad_out, x, weight):
+def linear_backward(grad_out, x, weight, return_device=False):
     """
     Linear Layer Backward Pass
     
@@ -621,12 +663,14 @@ def linear_backward(grad_out, x, weight):
     
     Parameters
     ----------
-    grad_out : numpy.ndarray
+    grad_out : numpy.ndarray or DeviceNDArray
         Gradient from next layer of shape (B, out_features)
-    x : numpy.ndarray
+    x : numpy.ndarray or DeviceNDArray
         Input from forward pass of shape (B, in_features)
-    weight : numpy.ndarray
+    weight : numpy.ndarray or DeviceNDArray
         Weight matrix of shape (in_features, out_features)
+    return_device : bool
+        If True, return device arrays. Default: False
     
     Returns
     -------
@@ -635,14 +679,32 @@ def linear_backward(grad_out, x, weight):
         dW : Gradient w.r.t. weight of shape (in_features, out_features)
         db : Gradient w.r.t. bias of shape (out_features,)
     """
+    # Handle device arrays for transpose
+    if is_device_array(x):
+        x_host = x.copy_to_host()
+        x_T = x_host.T
+    else:
+        x_T = x.T
+    
+    if is_device_array(weight):
+        w_host = weight.copy_to_host()
+        w_T = w_host.T
+    else:
+        w_T = weight.T
+    
+    if is_device_array(grad_out):
+        grad_out_host = grad_out.copy_to_host()
+    else:
+        grad_out_host = grad_out
+    
     # dW = X.T @ dY
-    dW = matmul(x.T, grad_out)
+    dW = matmul(x_T, grad_out_host, return_device=return_device)
     
     # dX = dY @ W.T
-    dX = matmul(grad_out, weight.T)
+    dX = matmul(grad_out_host, w_T, return_device=return_device)
     
     # db = sum(dY, axis=0)
-    db = np.sum(grad_out, axis=0)
+    db = np.sum(grad_out_host, axis=0)
     
     return dX, dW, db
 

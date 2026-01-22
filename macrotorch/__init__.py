@@ -16,9 +16,11 @@ from .ops import cross_entropy_backward
 from .ops import flatten
 from .ops import flatten_backward
 from .ops import SGD
+from .ops import is_device_array
+from .ops import to_device
 from .layers import Conv2d
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 __all__ = [
     'Conv2d',
@@ -40,4 +42,6 @@ __all__ = [
     'flatten',
     'flatten_backward',
     'SGD',
+    'is_device_array',
+    'to_device',
 ]

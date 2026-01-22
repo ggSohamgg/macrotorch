@@ -1621,15 +1621,24 @@ def benchmark_cross_entropy(B, C, dtype_name='float32', num_runs=10):
         
         pt_grad = t_logits.grad.cpu().numpy()
     
-    # MacroTorch (GPU) Forward
+    # MacroTorch (GPU) - Pre-allocate device arrays to avoid transfer overhead
     probs_2d = probs.astype(np.float32)
     targets_int = targets.astype(np.int32)
     
-    # Warmup
+    # Pre-allocate on GPU once
+    d_probs = cuda.to_device(probs_2d)
+    d_targets = cuda.to_device(targets_int)
+    d_loss = cuda.device_array(B, dtype=np.float32)
+    d_grad = cuda.device_array((B, C), dtype=np.float32)
+    
+    # Warmup Forward
+    threads_per_block = 256
+    blocks_per_grid = math.ceil(B / threads_per_block)
     for _ in range(5):
-        _ = cross_entropy_loss(probs_2d, targets_int)
+        cross_entropy_loss_kernel[blocks_per_grid, threads_per_block](d_probs, d_targets, d_loss, B, C)
     cuda.synchronize()
     
+    # Time Forward (kernel only, no transfer)
     if TORCH_AVAILABLE:
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
@@ -1637,7 +1646,7 @@ def benchmark_cross_entropy(B, C, dtype_name='float32', num_runs=10):
         times = []
         for _ in range(num_runs):
             start_event.record()
-            mt_loss = cross_entropy_loss(probs_2d, targets_int)
+            cross_entropy_loss_kernel[blocks_per_grid, threads_per_block](d_probs, d_targets, d_loss, B, C)
             end_event.record()
             torch.cuda.synchronize()
             times.append(start_event.elapsed_time(end_event))
@@ -1645,21 +1654,27 @@ def benchmark_cross_entropy(B, C, dtype_name='float32', num_runs=10):
         times = []
         for _ in range(num_runs):
             start = time.perf_counter()
-            mt_loss = cross_entropy_loss(probs_2d, targets_int)
+            cross_entropy_loss_kernel[blocks_per_grid, threads_per_block](d_probs, d_targets, d_loss, B, C)
             cuda.synchronize()
             times.append((time.perf_counter() - start) * 1000)
     mt_fwd_time = np.median(times)
+    mt_loss = np.mean(d_loss.copy_to_host())
     
-    # MacroTorch (GPU) Backward
+    # Warmup Backward
+    threads = (16, 16)
+    blocks_x = math.ceil(B / 16)
+    blocks_y = math.ceil(C / 16)
+    blocks = (blocks_x, blocks_y)
     for _ in range(5):
-        _ = cross_entropy_backward(probs_2d, targets_int)
+        cross_entropy_backward_kernel[blocks, threads](d_probs, d_targets, d_grad, B, C)
     cuda.synchronize()
     
+    # Time Backward (kernel only, no transfer)
     if TORCH_AVAILABLE:
         times = []
         for _ in range(num_runs):
             start_event.record()
-            mt_grad = cross_entropy_backward(probs_2d, targets_int)
+            cross_entropy_backward_kernel[blocks, threads](d_probs, d_targets, d_grad, B, C)
             end_event.record()
             torch.cuda.synchronize()
             times.append(start_event.elapsed_time(end_event))
@@ -1667,10 +1682,11 @@ def benchmark_cross_entropy(B, C, dtype_name='float32', num_runs=10):
         times = []
         for _ in range(num_runs):
             start = time.perf_counter()
-            mt_grad = cross_entropy_backward(probs_2d, targets_int)
+            cross_entropy_backward_kernel[blocks, threads](d_probs, d_targets, d_grad, B, C)
             cuda.synchronize()
             times.append((time.perf_counter() - start) * 1000)
     mt_bwd_time = np.median(times)
+    mt_grad = d_grad.copy_to_host()
     
     # Compute errors
     loss_error = abs(mt_loss - numpy_loss)

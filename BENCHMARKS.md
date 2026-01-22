@@ -159,6 +159,31 @@ Tiled matrix multiplication using 16×16 shared memory tiles with FP32 accumulat
 
 ---
 
+## Cross-Entropy Loss 🏆
+
+Cross-entropy loss for multi-class classification with CUDA kernels.
+
+### Small Configuration (Batch=32, Classes=10, FP32)
+
+| Pass | NumPy (CPU) | PyTorch (GPU) | MacroTorch (GPU) | MT vs PT | Max Error |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| **Forward** | 0.01 ms | 0.03 ms | 0.07 ms | 2.3x slower | `0.00e+00` |
+| **Backward** | 0.01 ms | 0.14 ms | **0.07 ms** | **🏆 2.0x faster** | `0.00e+00` |
+
+### Large Configuration (Batch=256, Classes=1000, FP32)
+
+| Pass | NumPy (CPU) | PyTorch (GPU) | MacroTorch (GPU) | MT vs PT | Max Error |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| **Forward** | 0.02 ms | 0.04 ms | 0.07 ms | 1.7x slower | `0.00e+00` |
+| **Backward** | 0.20 ms | 0.26 ms | **0.12 ms** | **🏆 2.22x faster** | `0.00e+00` |
+
+> [!IMPORTANT]
+> **MacroTorch's Cross-Entropy Backward is 2.22x faster than PyTorch!**
+
+> The cross-entropy kernel achieves **perfect accuracy** (0.00 error) on all configurations.
+
+---
+
 ## Summary
 
 MacroTorch demonstrates:
@@ -169,6 +194,7 @@ MacroTorch demonstrates:
 - ✅ **🏆 2.6x faster than PyTorch** for MaxPool2D backward
 - ✅ **🏆 5.3x faster than PyTorch** for 2D Legacy weight gradient backward
 - ✅ **🏆 2.71x faster than PyTorch** for Softmax backward
+- ✅ **🏆 2.22x faster than PyTorch** for Cross-Entropy backward
 - ✅ **🏆 1.8x faster than PyTorch** for ReLU backward
 - ✅ **Better FP16 precision** than PyTorch in bias gradient operations
 - ✅ **Excellent accuracy** with max error ~1e-03 to 1e-05
@@ -183,6 +209,7 @@ MacroTorch demonstrates:
 | **Weight Backward (2D Legacy)** | 8×128×128, 3×3, FP32 | **🏆 5.3x faster** |
 | **Weight Backward (2D Legacy)** | 8×128×128, 3×3, FP16 | **🏆 3.5x faster** |
 | **ReLU Backward** | 1024×1024, FP32 | **🏆 1.8x faster** |
+| **Cross-Entropy Backward** | 256×1000, FP32 | **🏆 2.22x faster** |
 
 ### Note on PyTorch Comparison
 PyTorch uses highly optimized cuDNN for forward and input backward passes, which is ~15-25x faster than MacroTorch for those operations. However, MacroTorch's custom kernels **beat PyTorch** for weight gradient computation (2D) and ReLU backward.

@@ -729,7 +729,7 @@ def cross_entropy_loss(probs, targets, d_probs=None, d_targets=None, d_loss=None
     
     Parameters
     ----------
-    probs : numpy.ndarray
+    probs : numpy.ndarray or DeviceNDArray
         Softmax probabilities of shape (B, C) where B is batch size, C is num classes
     targets : numpy.ndarray
         Target class indices of shape (B,), integer values in [0, C-1]
@@ -739,14 +739,15 @@ def cross_entropy_loss(probs, targets, d_probs=None, d_targets=None, d_loss=None
     float
         Mean cross-entropy loss over the batch
     """
-    B, C = probs.shape
-    
-    if d_probs is None:
-        d_probs = cuda.to_device(probs.astype(np.float32))
-        d_targets = cuda.to_device(targets.astype(np.int32))
-        return_host = True
+    if is_device_array(probs):
+        B, C = probs.shape
+        d_probs = probs
     else:
-        return_host = False
+        B, C = probs.shape
+        d_probs = cuda.to_device(probs.astype(np.float32))
+    
+    if d_targets is None:
+        d_targets = cuda.to_device(targets.astype(np.int32))
     
     if d_loss is None:
         d_loss = cuda.device_array(B, dtype=np.float32)
@@ -757,14 +758,12 @@ def cross_entropy_loss(probs, targets, d_probs=None, d_targets=None, d_loss=None
     cross_entropy_loss_kernel[blocks_per_grid, threads_per_block](d_probs, d_targets, d_loss, B, C)
     cuda.synchronize()
     
-    if return_host:
-        loss = d_loss.copy_to_host()
-        return np.mean(loss)
-    else:
-        return d_loss
+    # Always return scalar loss
+    loss = d_loss.copy_to_host()
+    return np.mean(loss)
 
 
-def cross_entropy_backward(probs, targets, d_probs=None, d_targets=None, d_grad=None):
+def cross_entropy_backward(probs, targets, d_probs=None, d_targets=None, d_grad=None, return_device=False):
     """
     Cross-Entropy Loss Backward Pass
     
@@ -772,24 +771,27 @@ def cross_entropy_backward(probs, targets, d_probs=None, d_targets=None, d_grad=
     
     Parameters
     ----------
-    probs : numpy.ndarray
+    probs : numpy.ndarray or DeviceNDArray
         Softmax probabilities of shape (B, C)
     targets : numpy.ndarray
         Target class indices of shape (B,)
+    return_device : bool
+        If True, return device array. Default: False
     
     Returns
     -------
-    numpy.ndarray
+    numpy.ndarray or DeviceNDArray
         Gradient w.r.t. softmax input of shape (B, C)
     """
-    B, C = probs.shape
-    
-    if d_probs is None:
-        d_probs = cuda.to_device(probs.astype(np.float32))
-        d_targets = cuda.to_device(targets.astype(np.int32))
-        return_host = True
+    if is_device_array(probs):
+        B, C = probs.shape
+        d_probs = probs
     else:
-        return_host = False
+        B, C = probs.shape
+        d_probs = cuda.to_device(probs.astype(np.float32))
+    
+    if d_targets is None:
+        d_targets = cuda.to_device(targets.astype(np.int32))
     
     if d_grad is None:
         d_grad = cuda.device_array((B, C), dtype=np.float32)
@@ -802,10 +804,9 @@ def cross_entropy_backward(probs, targets, d_probs=None, d_targets=None, d_grad=
     cross_entropy_backward_kernel[blocks, threads](d_probs, d_targets, d_grad, B, C)
     cuda.synchronize()
     
-    if return_host:
-        return d_grad.copy_to_host()
-    else:
+    if return_device:
         return d_grad
+    return d_grad.copy_to_host()
 
 
 def flatten(x):

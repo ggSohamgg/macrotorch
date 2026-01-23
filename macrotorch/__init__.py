@@ -16,6 +16,8 @@ from .ops import cross_entropy_backward
 from .ops import flatten
 from .ops import flatten_backward
 from .ops import SGD
+from .ops import SGD_GPU
+from .ops import sgd_update_gpu
 from .ops import is_device_array
 from .ops import to_device
 from .layers import Conv2d
@@ -42,6 +44,9 @@ __all__ = [
     'flatten',
     'flatten_backward',
     'SGD',
+    'SGD_GPU',
+    'sgd_update_gpu',
     'is_device_array',
     'to_device',
 ]
+

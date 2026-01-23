@@ -2,7 +2,7 @@ import numpy as np
 import math
 from numba import cuda
 from numba.cuda.cudadrv.devicearray import DeviceNDArray
-from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD, MAXPOOL2D_FORWARD, MAXPOOL2D_BACKWARD, SOFTMAX_FORWARD, SOFTMAX_BACKWARD, matmul_tiled, cross_entropy_loss_kernel, cross_entropy_backward_kernel, BIAS_ADD_2D
+from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD, MAXPOOL2D_FORWARD, MAXPOOL2D_BACKWARD, SOFTMAX_FORWARD, SOFTMAX_BACKWARD, matmul_tiled, cross_entropy_loss_kernel, cross_entropy_backward_kernel, BIAS_ADD_2D, SGD_UPDATE
 
 
 def is_device_array(x):
@@ -886,3 +886,73 @@ class SGD:
     def zero_grad(self):
         """Placeholder for compatibility - gradients are computed fresh each iteration"""
         pass
+
+
+def sgd_update_gpu(d_weights, d_grads, lr):
+    """
+    GPU-based SGD update: weights -= lr * grads
+    
+    Updates weights in-place on GPU without any CPU transfer.
+    
+    Parameters
+    ----------
+    d_weights : DeviceNDArray
+        Weights on GPU (updated in-place)
+    d_grads : DeviceNDArray
+        Gradients on GPU
+    lr : float
+        Learning rate
+    """
+    n = d_weights.size
+    threads = 256
+    blocks = (n + threads - 1) // threads
+    SGD_UPDATE[blocks, threads](d_weights, d_grads, lr, n)
+
+
+class SGD_GPU:
+    """
+    GPU-based Stochastic Gradient Descent Optimizer
+    
+    Keeps all weights on GPU and updates in-place without CPU transfer.
+    
+    Parameters
+    ----------
+    params : dict
+        Dictionary of parameter names to DeviceNDArray weights
+    lr : float
+        Learning rate (default: 0.01)
+    
+    Example
+    -------
+    >>> # Initialize weights on GPU
+    >>> d_W1 = mt.to_device(W1)
+    >>> d_b1 = mt.to_device(b1)
+    >>> optimizer = SGD_GPU({'W1': d_W1, 'b1': d_b1}, lr=0.01)
+    >>> # After computing gradients (as device arrays)
+    >>> optimizer.step({'W1': d_grad_W1, 'b1': d_grad_b1})
+    """
+    def __init__(self, params, lr=0.01):
+        self.params = params  # dict of name -> DeviceNDArray
+        self.lr = lr
+    
+    def step(self, grads):
+        """
+        Update parameters using gradients (all on GPU)
+        
+        Parameters
+        ----------
+        grads : dict
+            Dictionary of parameter names to gradient DeviceNDArrays
+        """
+        for name, d_param in self.params.items():
+            if name in grads:
+                d_grad = grads[name]
+                # Ensure gradient is on GPU
+                if not is_device_array(d_grad):
+                    d_grad = to_device(d_grad)
+                sgd_update_gpu(d_param, d_grad, self.lr)
+        cuda.synchronize()
+    
+    def get_params(self):
+        """Return parameters as CPU numpy arrays"""
+        return {name: d_param.copy_to_host() for name, d_param in self.params.items()}

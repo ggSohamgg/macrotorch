@@ -479,6 +479,12 @@ def bias_add_2d(x, bias, out):
     if i < B and j < C:
         out[i, j] = x[i, j] + bias[j]
 
+@cuda.jit
+def sgd_update_kernel(weights, grads, lr, n):
+    i = cuda.grid(1)
+    if i < n:
+        weights.flat[i] -= lr * grads.flat[i]
+
 BIAS_KERNEL = conv2d_backward_bias
 WEIGHT_KERNEL = conv2d_backward_weight_shared
 RELU_FORWARD = relu_forward
@@ -489,4 +495,6 @@ WEIGHT_KERNEL_2D_LEGACY = conv2d_backward_weight_shared_2dchannel
 SOFTMAX_FORWARD = softmax_forward
 SOFTMAX_BACKWARD = softmax_backward
 BIAS_ADD_2D = bias_add_2d
+SGD_UPDATE = sgd_update_kernel
+
 

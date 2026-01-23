@@ -2,7 +2,7 @@ import numpy as np
 import math
 from numba import cuda
 from numba.cuda.cudadrv.devicearray import DeviceNDArray
-from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD, MAXPOOL2D_FORWARD, MAXPOOL2D_BACKWARD, SOFTMAX_FORWARD, SOFTMAX_BACKWARD, matmul_tiled, cross_entropy_loss_kernel, cross_entropy_backward_kernel
+from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD, MAXPOOL2D_FORWARD, MAXPOOL2D_BACKWARD, SOFTMAX_FORWARD, SOFTMAX_BACKWARD, matmul_tiled, cross_entropy_loss_kernel, cross_entropy_backward_kernel, BIAS_ADD_2D
 
 
 def is_device_array(x):
@@ -643,16 +643,28 @@ def linear(x, weight, bias=None, return_device=False):
     numpy.ndarray or DeviceNDArray
         Output tensor of shape (B, out_features)
     """
-    out = matmul(x, weight, return_device=return_device)
+    # Always compute matmul on GPU
+    d_out = matmul(x, weight, return_device=True)
+    
     if bias is not None:
+        # Add bias on GPU using kernel
+        B = d_out.shape[0]
+        C = d_out.shape[1]
+        d_bias = to_device(bias.astype(np.float32))
+        d_result = cuda.device_array((B, C), dtype=np.float32)
+        
+        threads = (16, 16)
+        blocks = (math.ceil(B / 16), math.ceil(C / 16))
+        BIAS_ADD_2D[blocks, threads](d_out, d_bias, d_result)
+        cuda.synchronize()
+        
         if return_device:
-            # Add bias on CPU for simplicity (bias is small)
-            out_host = out.copy_to_host()
-            out_host = out_host + bias
-            return cuda.to_device(out_host)
-        else:
-            out = out + bias
-    return out
+            return d_result
+        return d_result.copy_to_host()
+    
+    if return_device:
+        return d_out
+    return d_out.copy_to_host()
 
 
 def linear_backward(grad_out, x, weight, return_device=False):

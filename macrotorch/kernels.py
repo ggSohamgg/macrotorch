@@ -472,6 +472,13 @@ for dtype_name in ['fp16' , 'fp32']:
     KERNELS[('xlarge' , dtype_name)] = make_conv2d_direct(dtype_type)
     BACKWARD_KERNELS[('xlarge', dtype_name)] = make_conv2d_backward_global(dtype_type)
 
+@cuda.jit
+def bias_add_2d(x, bias, out):
+    i, j = cuda.grid(2)
+    B, C = x.shape
+    if i < B and j < C:
+        out[i, j] = x[i, j] + bias[j]
+
 BIAS_KERNEL = conv2d_backward_bias
 WEIGHT_KERNEL = conv2d_backward_weight_shared
 RELU_FORWARD = relu_forward
@@ -481,3 +488,5 @@ MAXPOOL2D_BACKWARD = maxpool2d_backward
 WEIGHT_KERNEL_2D_LEGACY = conv2d_backward_weight_shared_2dchannel
 SOFTMAX_FORWARD = softmax_forward
 SOFTMAX_BACKWARD = softmax_backward
+BIAS_ADD_2D = bias_add_2d
+

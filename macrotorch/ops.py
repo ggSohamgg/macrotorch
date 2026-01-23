@@ -4,6 +4,9 @@ from numba import cuda
 from numba.cuda.cudadrv.devicearray import DeviceNDArray
 from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD, MAXPOOL2D_FORWARD, MAXPOOL2D_BACKWARD, SOFTMAX_FORWARD, SOFTMAX_BACKWARD, matmul_tiled, cross_entropy_loss_kernel, cross_entropy_backward_kernel
 
+# CUDA grid dimension limits
+MAX_GRID_DIM_Z = 65535
+
 
 def is_device_array(x):
     """Check if x is a CUDA device array"""
@@ -93,11 +96,29 @@ def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=Non
     threads_per_block = (block_size , block_size)
     blocks_y = math.ceil(out_h / block_size)  
     blocks_x = math.ceil(out_w / block_size)  
-    blocks_z = N * Cout
-    blocks_per_grid = (blocks_x , blocks_y, blocks_z)  
     
     kernel = KERNELS[(tier , dtype)]
-    kernel[blocks_per_grid , threads_per_block](d_A , d_K , d_out, padding, d_bias)
+    
+    # Handle large batch sizes by splitting into chunks
+    total_work = N * Cout
+    if total_work <= MAX_GRID_DIM_Z:
+        # Single kernel launch
+        blocks_per_grid = (blocks_x, blocks_y, total_work)
+        kernel[blocks_per_grid, threads_per_block](d_A, d_K, d_out, padding, d_bias)
+    else:
+        # Process in batches to avoid exceeding grid z-dimension limit
+        batch_chunk = MAX_GRID_DIM_Z // Cout
+        for batch_start in range(0, N, batch_chunk):
+            batch_end = min(batch_start + batch_chunk, N)
+            chunk_size = batch_end - batch_start
+            
+            # Create views for this chunk
+            d_A_chunk = d_A[batch_start:batch_end]
+            d_out_chunk = d_out[batch_start:batch_end]
+            
+            blocks_z = chunk_size * Cout
+            blocks_per_grid = (blocks_x, blocks_y, blocks_z)
+            kernel[blocks_per_grid, threads_per_block](d_A_chunk, d_K, d_out_chunk, padding, d_bias)
     
     cuda.synchronize()
     
@@ -157,11 +178,26 @@ def input_backward(grad_out, K, padding=0, dtype='auto', verbose=False, return_d
     threads_per_block = (block_size, block_size)
     blocks_y = math.ceil(H_in / block_size)
     blocks_x = math.ceil(W_in / block_size)
-    blocks_z = N * Cin
-    blocks_per_grid = (blocks_x, blocks_y, blocks_z)
     
     kernel = BACKWARD_KERNELS[(tier, dtype)]
-    kernel[blocks_per_grid, threads_per_block](d_grad_out, d_K, padding, d_grad_A)
+    
+    # Handle large batch sizes by splitting into chunks
+    total_work = N * Cin
+    if total_work <= MAX_GRID_DIM_Z:
+        blocks_per_grid = (blocks_x, blocks_y, total_work)
+        kernel[blocks_per_grid, threads_per_block](d_grad_out, d_K, padding, d_grad_A)
+    else:
+        batch_chunk = MAX_GRID_DIM_Z // Cin
+        for batch_start in range(0, N, batch_chunk):
+            batch_end = min(batch_start + batch_chunk, N)
+            chunk_size = batch_end - batch_start
+            
+            d_grad_out_chunk = d_grad_out[batch_start:batch_end]
+            d_grad_A_chunk = d_grad_A[batch_start:batch_end]
+            
+            blocks_z = chunk_size * Cin
+            blocks_per_grid = (blocks_x, blocks_y, blocks_z)
+            kernel[blocks_per_grid, threads_per_block](d_grad_out_chunk, d_K, padding, d_grad_A_chunk)
     
     cuda.synchronize()
     
@@ -500,10 +536,26 @@ def maxpool2d_forward(x, pool_size=2, d_x=None, d_out=None, d_indices=None, retu
     threads = (16, 16)
     blocks_x = math.ceil(W_out / 16)
     blocks_y = math.ceil(H_out / 16)
-    blocks_z = N * C
-    blocks = (blocks_x, blocks_y, blocks_z)
     
-    MAXPOOL2D_FORWARD[blocks, threads](d_x, d_out, d_indices, pool_size)
+    # Handle large batch sizes by splitting into chunks
+    total_work = N * C
+    if total_work <= MAX_GRID_DIM_Z:
+        blocks = (blocks_x, blocks_y, total_work)
+        MAXPOOL2D_FORWARD[blocks, threads](d_x, d_out, d_indices, pool_size)
+    else:
+        batch_chunk = MAX_GRID_DIM_Z // C
+        for batch_start in range(0, N, batch_chunk):
+            batch_end = min(batch_start + batch_chunk, N)
+            chunk_size = batch_end - batch_start
+            
+            d_x_chunk = d_x[batch_start:batch_end]
+            d_out_chunk = d_out[batch_start:batch_end]
+            d_indices_chunk = d_indices[batch_start:batch_end]
+            
+            blocks_z = chunk_size * C
+            blocks = (blocks_x, blocks_y, blocks_z)
+            MAXPOOL2D_FORWARD[blocks, threads](d_x_chunk, d_out_chunk, d_indices_chunk, pool_size)
+    
     cuda.synchronize()
     
     if return_device:
@@ -554,10 +606,26 @@ def maxpool2d_backward(grad_out, indices, input_shape, pool_size=2, d_grad_out=N
     threads = (16, 16)
     blocks_x = math.ceil(W_out / 16)
     blocks_y = math.ceil(H_out / 16)
-    blocks_z = N * C
-    blocks = (blocks_x, blocks_y, blocks_z)
     
-    MAXPOOL2D_BACKWARD[blocks, threads](d_grad_out, d_indices, d_grad_in, pool_size)
+    # Handle large batch sizes by splitting into chunks
+    total_work = N * C
+    if total_work <= MAX_GRID_DIM_Z:
+        blocks = (blocks_x, blocks_y, total_work)
+        MAXPOOL2D_BACKWARD[blocks, threads](d_grad_out, d_indices, d_grad_in, pool_size)
+    else:
+        batch_chunk = MAX_GRID_DIM_Z // C
+        for batch_start in range(0, N, batch_chunk):
+            batch_end = min(batch_start + batch_chunk, N)
+            chunk_size = batch_end - batch_start
+            
+            d_grad_out_chunk = d_grad_out[batch_start:batch_end]
+            d_indices_chunk = d_indices[batch_start:batch_end]
+            d_grad_in_chunk = d_grad_in[batch_start:batch_end]
+            
+            blocks_z = chunk_size * C
+            blocks = (blocks_x, blocks_y, blocks_z)
+            MAXPOOL2D_BACKWARD[blocks, threads](d_grad_out_chunk, d_indices_chunk, d_grad_in_chunk, pool_size)
+    
     cuda.synchronize()
     
     if return_device:

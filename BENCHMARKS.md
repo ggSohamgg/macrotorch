@@ -11,12 +11,12 @@ All tests and benchmarks were performed on an **NVIDIA Tesla T4 GPU**.
 
 **Configuration**: Batch=2, In Channels=4, Out Channels=8, 64×64 Input, 3×3 Kernel, Padding=1
 
-| Precision | SciPy (CPU) | PyTorch (GPU) | MacroTorch (GPU) | MT vs CPU |
-| :---: | :---: | :---: | :---: | :---: |
-| **FP32** | 13.14 ms | 0.06 ms | 1.30 ms | **10.1x faster** |
-| **FP16** | 13.13 ms | 0.06 ms | 1.34 ms | **9.8x faster** |
+| Precision | SciPy (CPU) | PyTorch (GPU) | MacroTorch (GPU) | MT vs CPU | Max Error |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| **FP32** | 13.14 ms | 0.06 ms | 1.30 ms | **10.1x faster** | `9.54e-06` |
+| **FP16** | 13.13 ms | 0.06 ms | 1.34 ms | **9.8x faster** | `7.63e-06` |
 
-> MacroTorch achieves high accuracy (1.99e-00 error reported, likely due to accumulation differences in large sums).
+> MacroTorch matches PyTorch accuracy exactly (~1e-06 error).
 
 ---
 

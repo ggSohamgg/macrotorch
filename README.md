@@ -1,7 +1,7 @@
 # MacroTorch
 
-![Python](https://www.python.org/downloads/)
-![Numba CUDA](https://github.com/NVIDIA/numba-cuda)
+[![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Numba](https://img.shields.io/badge/Numba-CUDA-green.svg)](https://numba.readthedocs.io/en/stable/cuda/index.html)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Status](https://img.shields.io/badge/status-alpha-orange.svg)
 

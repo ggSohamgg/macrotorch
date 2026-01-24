@@ -1,6 +1,11 @@
 # MacroTorch
 
-Custom CUDA kernels for 4D multi-channel convolution with PyTorch-style API. Built using NumPy for seamless data handling and Numba for optimized CUDA performance. Supports optimized forward/backward passes with shared memory tiling, FP16/FP32 support, and competitive performance against PyTorch.
+![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
+![Numba CUDA](https://img.shields.io/badge/Numba-CUDA-green.svg)
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Status](https://img.shields.io/badge/status-alpha-orange.svg)
+
+Custom CUDA kernels for 4D multi-channel convolution with PyTorch-style API. Built using NumPy for seamless data handling and Numba for optimized CUDA performance. Supports optimized forward/backward passes with shared memory tiling, FP16/FP32 support.
 
 ## Project Structure
 
@@ -133,14 +138,6 @@ Despite optimizations, MacroTorch is slower than PyTorch for full model training
 
 MacroTorch kernels are written using Numba CUDA, which prioritizes clarity and flexibility over access to low-level hardware features such as WMMA instructions.
 
-## 🚀 Roadmap
-
-MacroTorch is an evolving project focusing on deep CUDA optimizations. Upcoming features include:
-
-- [ ] **Kernel Fusion**: Combining Convolution/Linear with ReLU/Bias to reduce memory round-trips.
-- [ ] **BatchNorm & LayerNorm**: Custom CUDA implementations for common normalization layers.
-- [ ] **Tensor Core Support**: Utilizing `wmma` (Warp Matrix Multiply-Accumulate) for hardware-accelerated FP16.
-- [ ] **Optimized ResNet/VGG**: End-to-end optimized model architectures.
 
 ## 📝 Acknowledgments
 

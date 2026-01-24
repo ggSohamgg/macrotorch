@@ -9,6 +9,7 @@ macrotorch/
 ├── pyproject.toml       # pip install config
 ├── README.md
 ├── BENCHMARKS.md        # Detailed benchmarks
+├── train_mnist.py       # Standalone MNIST training script
 ├── macrotorch/
 │   ├── __init__.py      # Exports
 │   ├── kernels.py       # CUDA kernel definitions
@@ -50,6 +51,14 @@ This script trains a CNN on MNIST using both frameworks and compares training ti
 
 ```bash
 python examples/train_mnist_comparison.py
+```
+
+### Training MNIST (Standalone)
+
+Run a standalone training session on MNIST using MacroTorch with progress bars. You can edit `train_mnist.py` directly to modify the architecture, batch size, learning rate, or number of epochs.
+
+```bash
+python train_mnist.py
 ```
 
 ### Basic Usage

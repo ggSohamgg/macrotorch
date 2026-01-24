@@ -263,8 +263,8 @@ def train_macrotorch_gpu_epoch(X_train, y_train, batch_size, lr=0.01, seed=42):
         mt.sgd_update_gpu(d_b_fc1,   mt.to_device(db_fc1),   lr)
         mt.sgd_update_gpu(d_b_fc2,   mt.to_device(db_fc2),   lr)
 
-        # Update progress bar
-        if (i + 1) % max(1, n_batches // 20) == 0:
+        # Update progress bar every 10 iterations for smoothness
+        if (i + 1) % 10 == 0:
             pbar.set_postfix(acc=f"{100.0 * correct / ((i+1)*batch_size):.1f}%")
 
     cuda.synchronize()
@@ -287,9 +287,7 @@ seed = 42
 
 results = []
 
-for bs in tqdm(batch_sizes, desc="Batch sizes"):
-    print(f"\nBatch Size: {bs}")
-
+for bs in batch_sizes:
     t_mt, acc_mt = train_macrotorch_gpu_epoch(X_train, y_train, bs, lr=lr, seed=seed)
     print(f"  MacroTorch GPU: {t_mt:6.2f}s | Acc: {acc_mt:5.1f}%")
 

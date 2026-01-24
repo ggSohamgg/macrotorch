@@ -90,12 +90,13 @@ def conv2d_forward(A, K, padding=0, stride=1, bias=None, return_device=False):
     matmul_tiled[(blocks_y, blocks_x), threads_per_block](d_col, d_K_T, d_out_2d)
     cuda.synchronize()
     
-    # Add bias if provided (GPU)
+    # Add bias if provided (GPU) - in-place: output same as input
     if bias is not None:
         d_bias = cuda.to_device(bias.astype(np.float32)) if not is_device_array(bias) else bias
         threads_bias = (16, 16)
-        blocks_bias = ((Cout + 15) // 16, (col_rows + 15) // 16)
-        BIAS_ADD_2D[blocks_bias, threads_bias](d_out_2d, d_bias, col_rows, Cout)
+        B, C = col_rows, Cout
+        blocks_bias = ((C + 15) // 16, (B + 15) // 16)
+        BIAS_ADD_2D[blocks_bias, threads_bias](d_out_2d, d_bias, d_out_2d)
         cuda.synchronize()
     
     # Reshape to 4D NHWC on GPU, then permute to NCHW

@@ -159,7 +159,7 @@ Tiled matrix multiplication using 16×16 shared memory tiles with FP32 accumulat
 
 ---
 
-## Cross-Entropy Loss 🏆
+## Cross-Entropy Loss 
 
 Cross-entropy loss for multi-class classification with CUDA kernels.
 
@@ -168,7 +168,7 @@ Cross-entropy loss for multi-class classification with CUDA kernels.
 | Pass | NumPy (CPU) | PyTorch (GPU) | MacroTorch (GPU) | MT vs PT | Max Error |
 | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Forward** | 0.02 ms | 0.05 ms | 0.07 ms | 1.4x slower | `0.00e+00` |
-| **Backward** | 0.02 ms | 0.18 ms | **0.07 ms** | **🏆 2.6x faster** | `0.00e+00` |
+| **Backward** | 0.02 ms | 0.18 ms | **0.07 ms** | **2.6x faster** | `0.00e+00` |
 
 ### Large Configuration (Batch=256, Classes=1000, FP32)
 
@@ -210,6 +210,23 @@ MacroTorch demonstrates:
 | **Weight Backward (2D Legacy)** | 8×128×128, 3×3, FP16 | **3.5x faster** |
 | **ReLU Backward** | 1024×1024, FP32 | **1.7x faster** |
 | **Cross-Entropy Backward** | 256×1000, FP32 | **2.2x faster** |
+
+---
+
+### End-to-End Training: MNIST (1 Epoch)
+Comparison of full model training time (1 epoch) between MacroTorch and PyTorch across various batch sizes.
+
+| Batch Size | PyTorch (s) | MacroTorch (s) | Slowdown |
+| :--- | :--- | :--- | :--- |
+| **32** | 3.44s | 57.13s | 16.61x slower |
+| **64** | 1.80s | 34.30s | 19.04x slower |
+| **128** | 1.08s | 19.42s | 18.01x slower |
+| **256** | 0.83s | 13.56s | 16.43x slower |
+| **512** | 0.69s | 10.88s | 15.80x slower |
+| **1024** | 0.66s | 9.30s | 14.19x slower |
+
+> **Note**: While individual kernels are competitive, the end-to-end slowdown is primarily due to PyTorch's internal kernel fusion and graph optimizations. MacroTorch focuses on raw kernel transparency and research flexibility.
+
 
 ### Note on PyTorch Comparison
 PyTorch uses highly optimized cuDNN for most operations. MacroTorch outperforms PyTorch **only on specific configurations** listed above, typically involving simpler memory access patterns or specific tensor shapes.

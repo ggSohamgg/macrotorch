@@ -396,7 +396,7 @@ def train_macrotorch_gpu_fixed(X_train, y_train, batch_size):
 # CELL 7: Run Benchmarks
 # ============================================================================
 print("\n" + "=" * 70)
-print(" 🚀 FIXED GPU Benchmark: MacroTorch vs PyTorch (1 Epoch)")
+print(" 🚀 GPU Benchmark: MacroTorch vs PyTorch (1 Epoch)")
 print("=" * 70)
 
 

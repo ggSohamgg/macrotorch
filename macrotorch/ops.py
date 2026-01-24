@@ -87,7 +87,7 @@ def conv2d_forward(A, K, padding=0, stride=1, bias=None, return_device=False):
     blocks_x = (N_dim + TILE - 1) // TILE
     blocks_y = (M + TILE - 1) // TILE
     
-    matmul_tiled[(blocks_y, blocks_x), threads_per_block](d_col, d_K_T, d_out_2d)
+    matmul_tiled[(blocks_x, blocks_y), threads_per_block](d_col, d_K_T, d_out_2d)
     cuda.synchronize()
     
     # Add bias if provided (GPU) - in-place: output same as input
@@ -175,7 +175,7 @@ def input_backward(grad_out, K, padding=0, stride=1, dtype='auto', verbose=False
     blocks_x = (N_dim + TILE - 1) // TILE
     blocks_y = (M + TILE - 1) // TILE
     
-    matmul_tiled[(blocks_y, blocks_x), threads_per_block](d_grad_out_2d, d_K_reshaped, d_col)
+    matmul_tiled[(blocks_x, blocks_y), threads_per_block](d_grad_out_2d, d_K_reshaped, d_col)
     cuda.synchronize()
     
     # col2im: convert columns back to image
@@ -267,7 +267,7 @@ def weight_backward(grad_out, A, padding=0, stride=1, Kh=None, Kw=None, dtype='a
     blocks_x = (N_dim + TILE - 1) // TILE
     blocks_y = (M + TILE - 1) // TILE
     
-    matmul_tiled[(blocks_y, blocks_x), threads_per_block](d_grad_out_T, d_col, d_grad_W_2d)
+    matmul_tiled[(blocks_x, blocks_y), threads_per_block](d_grad_out_T, d_col, d_grad_W_2d)
     cuda.synchronize()
     
     # Reshape to (Cout, Cin, Kh, Kw) on GPU

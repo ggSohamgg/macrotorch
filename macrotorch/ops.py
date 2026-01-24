@@ -2,7 +2,7 @@ import numpy as np
 import math
 from numba import cuda
 from numba.cuda.cudadrv.devicearray import DeviceNDArray
-from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD, MAXPOOL2D_FORWARD, MAXPOOL2D_BACKWARD, SOFTMAX_FORWARD, SOFTMAX_BACKWARD, matmul_tiled, cross_entropy_loss_kernel, cross_entropy_backward_kernel, BIAS_ADD_2D, SGD_UPDATE
+from .kernels import KERNELS , BACKWARD_KERNELS, BIAS_KERNEL, WEIGHT_KERNEL, TIERS, RELU_FORWARD, RELU_BACKWARD, MAXPOOL2D_FORWARD, MAXPOOL2D_BACKWARD, SOFTMAX_FORWARD, SOFTMAX_BACKWARD, matmul_tiled, cross_entropy_loss_kernel, cross_entropy_backward_kernel, BIAS_ADD_2D, SGD_UPDATE, IM2COL, COL2IM, SUM_AXIS0, TRANSPOSE_2D, PERMUTE4D_NHWC_NCHW, PERMUTE4D_NCHW_NHWC, ZERO_FILL
 
 
 def is_device_array(x):
@@ -17,88 +17,97 @@ def to_device(x):
     return cuda.to_device(x)
 
 
-def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=None , d_K=None , d_out=None, return_device=False):
+def conv2d_forward(A, K, padding=0, stride=1, bias=None, return_device=False):
     """
-    2D Convolution Forward Pass (Multi-Channel Batched)
+    2D Convolution Forward Pass using im2col + GEMM (Fully GPU-native)
     
     Parameters
     ----------
     A : numpy.ndarray or DeviceNDArray
-        Input tensor of shape (N, C_in, H, W).
+        Input tensor of shape (N, C_in, H, W)
     K : numpy.ndarray or DeviceNDArray
-        Kernel tensor of shape (C_out, C_in, Kh, Kw).
+        Kernel tensor of shape (C_out, C_in, Kh, Kw)
     padding : int
-        Zero-padding added to both sides of the input.
+        Zero-padding added to both sides of input
+    stride : int
+        Stride of the convolution (default: 1)
     bias : numpy.ndarray or None
-        Bias tensor of shape (C_out,).
+        Bias tensor of shape (C_out,)
     return_device : bool
-        If True, return device array (stays on GPU). Default: False
+        If True, return device array (stays on GPU)
     """
-    # Handle device arrays
     if is_device_array(A):
         N, Cin, H, W = A.shape
-        a_dtype = np.float32
+        d_A = A
     else:
-        assert A.ndim == 4 , f"A must be 4D (N, C, H, W), got shape {A.shape}"
         N, Cin, H, W = A.shape
-        a_dtype = A.dtype
+        d_A = cuda.to_device(A.astype(np.float32))
     
     if is_device_array(K):
         Cout, Cin_K, Kh, Kw = K.shape
+        d_K = K
     else:
-        assert K.ndim == 4 , f"K must be 4D (Cout, Cin, Kh, Kw), got shape {K.shape}"
         Cout, Cin_K, Kh, Kw = K.shape
+        d_K = cuda.to_device(K.astype(np.float32))
     
-    assert Cin == Cin_K, f"Input channels {Cin} must match kernel in_channels {Cin_K}"
-
-    if dtype == "auto":
-        dtype = 'fp16' if a_dtype == np.float16 else 'fp32'
+    assert Cin == Cin_K, f"Input channels {Cin} != kernel channels {Cin_K}"
     
-    max_k = max(Kh , Kw)
+    out_h = (H + 2 * padding - Kh) // stride + 1
+    out_w = (W + 2 * padding - Kw) // stride + 1
     
-    if max_k <= 7:
-        tier = 'tiny'
-    elif max_k <= 15:
-        tier = 'small'
-    elif max_k <= 63:
-        tier = 'medium'
-    elif max_k <= 93:
-        tier = 'large'
-    else:
-        tier = 'xlarge'
+    # im2col: (N * out_h * out_w, Cin * Kh * Kw)
+    col_rows = N * out_h * out_w
+    col_cols = Cin * Kh * Kw
+    d_col = cuda.device_array((col_rows, col_cols), dtype=np.float32)
     
-    config = TIERS[tier]
-    block_size = config['block_size']
-    use_shared = config['use_shared']
+    # Launch im2col kernel
+    total_elements = col_rows * col_cols
+    threads = 256
+    blocks = (total_elements + threads - 1) // threads
+    IM2COL[blocks, threads](d_A, d_col, N, Cin, H, W, Kh, Kw, padding, stride, out_h, out_w)
+    cuda.synchronize()
     
-    if verbose:
-        memory_type = "Shared Memory" if use_shared else "Direct Global"
-        print(f"Algorithm: {tier.upper()} ({dtype.upper()}) - {memory_type}")
+    # Reshape kernel on GPU: (Cout, Cin*Kh*Kw)
+    d_K_reshaped = d_K.reshape((Cout, Cin * Kh * Kw))
     
-    out_h = H - Kh + 1 + (2 * padding)
-    out_w = W - Kw + 1 + (2 * padding)
+    # GPU Transpose: K_reshaped.T -> (Cin*Kh*Kw, Cout)
+    d_K_T = cuda.device_array((col_cols, Cout), dtype=np.float32)
+    TILE = 16
+    blocks_t = ((Cout + TILE - 1) // TILE, (col_cols + TILE - 1) // TILE)
+    TRANSPOSE_2D[blocks_t, (TILE, TILE)](d_K_reshaped, d_K_T, Cout, col_cols)
+    cuda.synchronize()
     
-    if d_A is None:
-        d_A = to_device(A)
-    if d_K is None:
-        d_K = to_device(K)
+    # GEMM: col @ K.T -> (N*out_h*out_w, Cout)
+    d_out_2d = cuda.device_array((col_rows, Cout), dtype=np.float32)
     
-    if bias is None:
-        bias = np.zeros(Cout, dtype=np.float32)
-    d_bias = to_device(bias)
-
-    if d_out is None:
-        d_out = cuda.device_array((N, Cout, out_h , out_w) , dtype=np.float32)
+    M, K_dim = col_rows, col_cols
+    N_dim = Cout
     
-    threads_per_block = (block_size , block_size)
-    blocks_y = math.ceil(out_h / block_size)  
-    blocks_x = math.ceil(out_w / block_size)  
-    blocks_z = N * Cout
-    blocks_per_grid = (blocks_x , blocks_y, blocks_z)  
+    threads_per_block = (TILE, TILE)
+    blocks_x = (N_dim + TILE - 1) // TILE
+    blocks_y = (M + TILE - 1) // TILE
     
-    kernel = KERNELS[(tier , dtype)]
-    kernel[blocks_per_grid , threads_per_block](d_A , d_K , d_out, padding, d_bias)
+    matmul_tiled[(blocks_y, blocks_x), threads_per_block](d_col, d_K_T, d_out_2d, M, K_dim, N_dim)
+    cuda.synchronize()
     
+    # Add bias if provided (GPU)
+    if bias is not None:
+        d_bias = cuda.to_device(bias.astype(np.float32)) if not is_device_array(bias) else bias
+        threads_bias = (16, 16)
+        blocks_bias = ((Cout + 15) // 16, (col_rows + 15) // 16)
+        BIAS_ADD_2D[blocks_bias, threads_bias](d_out_2d, d_bias, col_rows, Cout)
+        cuda.synchronize()
+    
+    # Reshape to 4D NHWC on GPU, then permute to NCHW
+    # d_out_2d is (N*out_h*out_w, Cout) - interpret as (N, out_h, out_w, Cout) NHWC
+    d_out_nhwc = d_out_2d.reshape((N, out_h, out_w, Cout))
+    
+    # Permute NHWC -> NCHW on GPU
+    d_out = cuda.device_array((N, Cout, out_h, out_w), dtype=np.float32)
+    total = N * Cout * out_h * out_w
+    threads_p = 256
+    blocks_p = (total + threads_p - 1) // threads_p
+    PERMUTE4D_NHWC_NCHW[blocks_p, threads_p](d_out_nhwc, d_out, N, out_h, out_w, Cout)
     cuda.synchronize()
     
     if return_device:
@@ -106,63 +115,82 @@ def forward(A , K , padding=0, bias=None, dtype='auto' , verbose=False , d_A=Non
     return d_out.copy_to_host()
 
 
-def input_backward(grad_out, K, padding=0, dtype='auto', verbose=False, return_device=False):
+# Keep old forward as alias for backward compatibility
+def forward(A, K, padding=0, bias=None, dtype='auto', verbose=False, d_A=None, d_K=None, d_out=None, return_device=False):
+    """Legacy wrapper - calls conv2d_forward"""
+    return conv2d_forward(A, K, padding=padding, stride=1, bias=bias, return_device=return_device)
+
+
+def input_backward(grad_out, K, padding=0, stride=1, dtype='auto', verbose=False, return_device=False):
     """
-    2D Convolution Backward Pass (Input Gradient - Multi-Channel Batched)
+    2D Convolution Backward Pass (Input Gradient) using col2im + GEMM (Fully GPU-native)
+    
+    dX = col2im(dY_col @ W_reshaped)
     """
     if is_device_array(grad_out):
         N, Cout, out_h, out_w = grad_out.shape
         d_grad_out = grad_out
-        g_dtype = np.float32
     else:
-        assert grad_out.ndim == 4
         N, Cout, out_h, out_w = grad_out.shape
-        d_grad_out = cuda.to_device(grad_out)
-        g_dtype = grad_out.dtype
+        d_grad_out = cuda.to_device(grad_out.astype(np.float32))
     
     if is_device_array(K):
         Cout_K, Cin, Kh, Kw = K.shape
         d_K = K
     else:
-        assert K.ndim == 4
         Cout_K, Cin, Kh, Kw = K.shape
-        d_K = cuda.to_device(K)
+        d_K = cuda.to_device(K.astype(np.float32))
     
     assert Cout == Cout_K
     
-    if dtype == "auto":
-        dtype = 'fp16' if g_dtype == np.float16 else 'fp32'
-        
-    H_in = out_h + Kh - 1 - (2 * padding)
-    W_in = out_w + Kw - 1 - (2 * padding)
+    # Compute input dimensions
+    H_in = (out_h - 1) * stride - 2 * padding + Kh
+    W_in = (out_w - 1) * stride - 2 * padding + Kw
     
-    max_k = max(Kh, Kw)
+    TILE = 16
     
-    if max_k <= 7:
-        tier = 'tiny'
-    elif max_k <= 15:
-        tier = 'small'
-    elif max_k <= 63:
-        tier = 'medium'
-    elif max_k <= 93:
-        tier = 'large'
-    else:
-        tier = 'xlarge'
+    # Permute grad_out from NCHW to NHWC on GPU
+    d_grad_out_nhwc = cuda.device_array((N, out_h, out_w, Cout), dtype=np.float32)
+    total_p = N * Cout * out_h * out_w
+    threads_p = 256
+    blocks_p = (total_p + threads_p - 1) // threads_p
+    PERMUTE4D_NCHW_NHWC[blocks_p, threads_p](d_grad_out, d_grad_out_nhwc, N, Cout, out_h, out_w)
+    cuda.synchronize()
     
-    config = TIERS[tier]
-    block_size = config['block_size']
+    # Reshape to 2D: (N*out_h*out_w, Cout)
+    d_grad_out_2d = d_grad_out_nhwc.reshape((N * out_h * out_w, Cout))
     
+    # Reshape kernel on GPU: (Cout, Cin*Kh*Kw)
+    d_K_reshaped = d_K.reshape((Cout, Cin * Kh * Kw))
+    
+    # GEMM: dY @ W -> (N*out_h*out_w, Cin*Kh*Kw)
+    M = N * out_h * out_w
+    K_dim = Cout
+    N_dim = Cin * Kh * Kw
+    
+    d_col = cuda.device_array((M, N_dim), dtype=np.float32)
+    
+    threads_per_block = (TILE, TILE)
+    blocks_x = (N_dim + TILE - 1) // TILE
+    blocks_y = (M + TILE - 1) // TILE
+    
+    matmul_tiled[(blocks_y, blocks_x), threads_per_block](d_grad_out_2d, d_K_reshaped, d_col, M, K_dim, N_dim)
+    cuda.synchronize()
+    
+    # col2im: convert columns back to image
     d_grad_A = cuda.device_array((N, Cin, H_in, W_in), dtype=np.float32)
     
-    threads_per_block = (block_size, block_size)
-    blocks_y = math.ceil(H_in / block_size)
-    blocks_x = math.ceil(W_in / block_size)
-    blocks_z = N * Cin
-    blocks_per_grid = (blocks_x, blocks_y, blocks_z)
+    # Zero initialize on GPU
+    total_zero = N * Cin * H_in * W_in
+    threads_z = 256
+    blocks_z = (total_zero + threads_z - 1) // threads_z
+    ZERO_FILL[blocks_z, threads_z](d_grad_A, total_zero)
+    cuda.synchronize()
     
-    kernel = BACKWARD_KERNELS[(tier, dtype)]
-    kernel[blocks_per_grid, threads_per_block](d_grad_out, d_K, padding, d_grad_A)
-    
+    total_elements = N * out_h * out_w * Cin * Kh * Kw
+    threads = 256
+    blocks = (total_elements + threads - 1) // threads
+    COL2IM[blocks, threads](d_col, d_grad_A, N, Cin, H_in, W_in, Kh, Kw, padding, stride, out_h, out_w)
     cuda.synchronize()
     
     if return_device:
@@ -170,51 +198,83 @@ def input_backward(grad_out, K, padding=0, dtype='auto', verbose=False, return_d
     return d_grad_A.copy_to_host()
 
 
-def weight_backward(grad_out, A, padding=0, dtype='auto', verbose=False, d_grad_out=None, d_A=None, d_grad_W=None):
+def weight_backward(grad_out, A, padding=0, stride=1, Kh=None, Kw=None, dtype='auto', verbose=False, d_grad_out=None, d_A=None, d_grad_W=None, return_device=False):
     """
-    2D Convolution Backward Pass (Weight Gradient - Multi-Channel Batched)
+    2D Convolution Backward Pass (Weight Gradient) using im2col + GEMM (Fully GPU-native)
+    
+    dW = dY.T @ col
     """
     if d_grad_out is None:
-        assert grad_out.ndim == 4
-        assert A.ndim == 4
-        
-        if dtype == 'auto':
-            dtype = 'fp16' if grad_out.dtype == np.float16 else 'fp32'
-            
-        d_grad_out = cuda.to_device(grad_out)
-        d_A = cuda.to_device(A)
-
-    N, Cout, H_out, W_out = d_grad_out.shape
+        if is_device_array(grad_out):
+            d_grad_out = grad_out
+        else:
+            d_grad_out = cuda.to_device(grad_out.astype(np.float32))
+    
+    if d_A is None:
+        if is_device_array(A):
+            d_A = A
+        else:
+            d_A = cuda.to_device(A.astype(np.float32))
+    
+    N, Cout, out_h, out_w = d_grad_out.shape
     _, Cin, H_in, W_in = d_A.shape
     
-    Kh = H_in + 2 * padding - H_out + 1
-    Kw = W_in + 2 * padding - W_out + 1
+    # Compute kernel size if not provided
+    if Kh is None:
+        Kh = H_in + 2 * padding - (out_h - 1) * stride
+    if Kw is None:
+        Kw = W_in + 2 * padding - (out_w - 1) * stride
     
-    if d_grad_W is None:
-        grad_W = np.zeros((Cout, Cin, Kh, Kw), dtype=np.float32)
-        d_grad_W = cuda.to_device(grad_W)
-        return_host = True
-    else:
-        cuda.to_device(np.zeros((Cout, Cin, Kh, Kw), dtype=np.float32), to=d_grad_W) # zero init
-        return_host = False
-        
-    # Grid Configuration
-    TILE_H, TILE_W = 16, 16
+    TILE = 16
     
-    threads_per_block = (TILE_W, TILE_H)
-    blocks_x = math.ceil(W_out / TILE_W)
-    blocks_y = math.ceil(H_out / TILE_H)
-    blocks_z = Cout * Cin
-    blocks_per_grid = (blocks_x, blocks_y, blocks_z)
+    # im2col on input A: (N*out_h*out_w, Cin*Kh*Kw)
+    col_rows = N * out_h * out_w
+    col_cols = Cin * Kh * Kw
+    d_col = cuda.device_array((col_rows, col_cols), dtype=np.float32)
     
-    WEIGHT_KERNEL[blocks_per_grid, threads_per_block](d_A, d_grad_out, padding, d_grad_W)
-    
+    total_elements = col_rows * col_cols
+    threads = 256
+    blocks = (total_elements + threads - 1) // threads
+    IM2COL[blocks, threads](d_A, d_col, N, Cin, H_in, W_in, Kh, Kw, padding, stride, out_h, out_w)
     cuda.synchronize()
     
-    if return_host:
-        return d_grad_W.copy_to_host()
-    else:
+    # Permute grad_out from NCHW to NHWC on GPU
+    d_grad_out_nhwc = cuda.device_array((N, out_h, out_w, Cout), dtype=np.float32)
+    total_p = N * Cout * out_h * out_w
+    threads_p = 256
+    blocks_p = (total_p + threads_p - 1) // threads_p
+    PERMUTE4D_NCHW_NHWC[blocks_p, threads_p](d_grad_out, d_grad_out_nhwc, N, Cout, out_h, out_w)
+    cuda.synchronize()
+    
+    # Reshape to 2D: (N*out_h*out_w, Cout)
+    d_grad_out_2d = d_grad_out_nhwc.reshape((col_rows, Cout))
+    
+    # GPU Transpose: (N*out_h*out_w, Cout).T -> (Cout, N*out_h*out_w)
+    d_grad_out_T = cuda.device_array((Cout, col_rows), dtype=np.float32)
+    blocks_t = ((col_rows + TILE - 1) // TILE, (Cout + TILE - 1) // TILE)
+    TRANSPOSE_2D[blocks_t, (TILE, TILE)](d_grad_out_2d, d_grad_out_T, col_rows, Cout)
+    cuda.synchronize()
+    
+    # GEMM: dY.T @ col = (Cout, col_rows) @ (col_rows, col_cols) = (Cout, Cin*Kh*Kw)
+    d_grad_W_2d = cuda.device_array((Cout, col_cols), dtype=np.float32)
+    
+    M = Cout
+    K_dim = col_rows
+    N_dim = col_cols
+    
+    threads_per_block = (TILE, TILE)
+    blocks_x = (N_dim + TILE - 1) // TILE
+    blocks_y = (M + TILE - 1) // TILE
+    
+    matmul_tiled[(blocks_y, blocks_x), threads_per_block](d_grad_out_T, d_col, d_grad_W_2d, M, K_dim, N_dim)
+    cuda.synchronize()
+    
+    # Reshape to (Cout, Cin, Kh, Kw) on GPU
+    d_grad_W = d_grad_W_2d.reshape((Cout, Cin, Kh, Kw))
+    
+    if return_device:
         return d_grad_W
+    return d_grad_W.copy_to_host()
 
 
 def bias_backward(grad_out, dtype='auto', verbose=False, d_grad_out=None, d_grad_bias=None):

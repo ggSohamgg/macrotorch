@@ -485,6 +485,112 @@ def sgd_update_kernel(weights, grads, lr, n):
     if i < n:
         weights.flat[i] -= lr * grads.flat[i]
 
+@cuda.jit
+def im2col_kernel(data, col, N, C, H, W, Kh, Kw, pad, stride, out_h, out_w):
+    idx = cuda.grid(1)
+    total_elements = N * out_h * out_w * C * Kh * Kw
+    
+    if idx < total_elements:
+        kw = idx % Kw
+        tmp = idx // Kw
+        kh = tmp % Kh
+        tmp = tmp // Kh
+        c = tmp % C
+        tmp = tmp // C
+        ow = tmp % out_w
+        tmp = tmp // out_w
+        oh = tmp % out_h
+        n = tmp // out_h
+        
+        ih = oh * stride + kh - pad
+        iw = ow * stride + kw - pad
+        
+        row = n * out_h * out_w + oh * out_w + ow
+        col_idx = c * Kh * Kw + kh * Kw + kw
+        
+        if 0 <= ih < H and 0 <= iw < W:
+            col[row, col_idx] = data[n, c, ih, iw]
+        else:
+            col[row, col_idx] = float32(0.0)
+
+@cuda.jit
+def col2im_kernel(col, data, N, C, H, W, Kh, Kw, pad, stride, out_h, out_w):
+    idx = cuda.grid(1)
+    total_elements = N * out_h * out_w * C * Kh * Kw
+    
+    if idx < total_elements:
+        kw = idx % Kw
+        tmp = idx // Kw
+        kh = tmp % Kh
+        tmp = tmp // Kh
+        c = tmp % C
+        tmp = tmp // C
+        ow = tmp % out_w
+        tmp = tmp // out_w
+        oh = tmp % out_h
+        n = tmp // out_h
+        
+        ih = oh * stride + kh - pad
+        iw = ow * stride + kw - pad
+        
+        row = n * out_h * out_w + oh * out_w + ow
+        col_idx = c * Kh * Kw + kh * Kw + kw
+        
+        if 0 <= ih < H and 0 <= iw < W:
+            cuda.atomic.add(data, (n, c, ih, iw), col[row, col_idx])
+
+
+@cuda.jit  
+def sum_axis0_kernel(x, out, rows, cols):
+    j = cuda.grid(1)
+    if j < cols:
+        s = float32(0.0)
+        for i in range(rows):
+            s += x[i, j]
+        out[j] = s
+
+
+@cuda.jit
+def transpose_2d_kernel(src, dst, rows, cols):
+    i, j = cuda.grid(2)
+    if i < rows and j < cols:
+        dst[j, i] = src[i, j]
+
+
+@cuda.jit
+def permute4d_nhwc_to_nchw_kernel(src, dst, N, H, W, C):
+    idx = cuda.grid(1)
+    total = N * H * W * C
+    if idx < total:
+        c = idx % C
+        w = (idx // C) % W
+        h = (idx // (C * W)) % H
+        n = idx // (C * W * H)
+        dst[n, c, h, w] = src[n, h, w, c]
+
+
+@cuda.jit
+def permute4d_nchw_to_nhwc_kernel(src, dst, N, C, H, W):
+    """Permute 4D from NCHW to NHWC layout"""
+    idx = cuda.grid(1)
+    total = N * C * H * W
+    if idx < total:
+        w = idx % W
+        h = (idx // W) % H
+        c = (idx // (W * H)) % C
+        n = idx // (W * H * C)
+        dst[n, h, w, c] = src[n, c, h, w]
+
+
+@cuda.jit
+def zero_fill_kernel(arr, n):
+    """Zero fill array"""
+    i = cuda.grid(1)
+    if i < n:
+        arr.flat[i] = float32(0.0)
+
+
+# Exports
 BIAS_KERNEL = conv2d_backward_bias
 WEIGHT_KERNEL = conv2d_backward_weight_shared
 RELU_FORWARD = relu_forward
@@ -496,5 +602,11 @@ SOFTMAX_FORWARD = softmax_forward
 SOFTMAX_BACKWARD = softmax_backward
 BIAS_ADD_2D = bias_add_2d
 SGD_UPDATE = sgd_update_kernel
-
+IM2COL = im2col_kernel
+COL2IM = col2im_kernel
+SUM_AXIS0 = sum_axis0_kernel
+TRANSPOSE_2D = transpose_2d_kernel
+PERMUTE4D_NHWC_NCHW = permute4d_nhwc_to_nchw_kernel
+PERMUTE4D_NCHW_NHWC = permute4d_nchw_to_nhwc_kernel
+ZERO_FILL = zero_fill_kernel
 

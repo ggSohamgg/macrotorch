@@ -19,8 +19,8 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
-from macrotorch import conv2d_forward, conv2d_input_backward, conv2d_bias_backward, conv2d_weight_backward, Conv2d, relu, relu_backward, maxpool2d_forward, softmax_forward, softmax_backward, matmul, cross_entropy_loss, cross_entropy_backward, to_device, is_device_array
-from macrotorch.kernels import WEIGHT_KERNEL, RELU_FORWARD, MAXPOOL2D_FORWARD, SOFTMAX_FORWARD, SOFTMAX_BACKWARD, matmul_tiled, cross_entropy_loss_kernel, cross_entropy_backward_kernel
+from macrotorch import conv2d_forward, conv2d_input_backward, conv2d_bias_backward, conv2d_weight_backward, Conv2d, relu, relu_backward, maxpool2d_forward, maxpool2d_backward, softmax_forward, softmax_backward, matmul, cross_entropy_loss, cross_entropy_backward, to_device, is_device_array
+from macrotorch.kernels import RELU_FORWARD, MAXPOOL2D_FORWARD, SOFTMAX_FORWARD, SOFTMAX_BACKWARD, matmul_tiled, cross_entropy_loss_kernel, cross_entropy_backward_kernel
 import math
 
 
@@ -391,7 +391,7 @@ def benchmark_bias_backward(dtype_name='float32', num_runs=10):
 
 
 def benchmark_weight_backward(N, C, Cout, H, W, Kh, Kw, padding, dtype_name='float32', use_scipy=True, num_runs=10):
-    """Benchmark weight gradient computation."""
+    """Benchmark weight gradient computation using im2col + GEMM."""
     np_dtype = np.float32 if dtype_name == 'float32' else np.float16
     
     print(f"\n  Configuration:")
@@ -453,27 +453,13 @@ def benchmark_weight_backward(N, C, Cout, H, W, Kh, Kw, padding, dtype_name='flo
         if use_scipy:
             pt_error = np.abs(pt_result.cpu().numpy().astype(np.float32) - numpy_result).max()
     
-    # MacroTorch (GPU)
-    # Direct kernel launch if A is 4D... wait, previous code had shape checks.
-    # Current code is purely 4D.
-    d_A = cuda.to_device(A)
-    d_grad_out = cuda.to_device(grad_out)
+    # MacroTorch (GPU) - using new im2col-based weight_backward
+    d_A = to_device(A.astype(np.float32))
+    d_grad_out = to_device(grad_out.astype(np.float32))
     
-    # Grid configuration
-    threads = (16, 16)
-    blocks = (
-        math.ceil(W_out / 16),
-        math.ceil(H_out / 16),
-        Cout * C
-    )
-
     # Warmup
-    zeros_host = np.zeros((Cout, C, Kh, Kw), dtype=np.float32)
-    d_grad_W = cuda.to_device(zeros_host)
-    
     for _ in range(5):
-        d_grad_W.copy_to_device(zeros_host)
-        WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
+        _ = conv2d_weight_backward(d_grad_out, d_A, padding=padding, Kh=Kh, Kw=Kw, return_device=True)
     cuda.synchronize()
 
     if TORCH_AVAILABLE:
@@ -482,20 +468,16 @@ def benchmark_weight_backward(N, C, Cout, H, W, Kh, Kw, padding, dtype_name='flo
         
         times = []
         for _ in range(num_runs):
-            d_grad_W.copy_to_device(zeros_host)
-            cuda.synchronize() # Ensure zeroing is complete before start (though copy is sync usually on same stream)
             start_event.record()
-            WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
+            d_grad_W = conv2d_weight_backward(d_grad_out, d_A, padding=padding, Kh=Kh, Kw=Kw, return_device=True)
             end_event.record()
             torch.cuda.synchronize()
             times.append(start_event.elapsed_time(end_event))
     else:
         times = []
         for _ in range(num_runs):
-            d_grad_W.copy_to_device(zeros_host)
-            cuda.synchronize()
             start = time.perf_counter()
-            WEIGHT_KERNEL[blocks, threads](d_A, d_grad_out, padding, d_grad_W)
+            d_grad_W = conv2d_weight_backward(d_grad_out, d_A, padding=padding, Kh=Kh, Kw=Kw, return_device=True)
             cuda.synchronize()
             times.append((time.perf_counter() - start) * 1000)
     mt_time = np.median(times)
@@ -711,7 +693,7 @@ def main():
     print_header("WEIGHT BACKWARD (LARGE) - FP16")
     benchmark_weight_backward(N=8, C=32, Cout=64, H=128, W=128, Kh=3, Kw=3, padding=1, dtype_name='float16', use_scipy=True)
 
-    # Weight Backward - 2D Legacy
+    # Weight Backward - 2D Legacy (uses direct kernel, not im2col)
     print_header("WEIGHT BACKWARD (2D LEGACY) - FP32")
     benchmark_weight_backward_2d_legacy(N=8, H=128, W=128, Kh=3, Kw=3, padding=1, dtype_name='float32', use_scipy=True)
     

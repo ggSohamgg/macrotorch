@@ -74,9 +74,26 @@ weight = np.random.randn(16, 3, 3, 3).astype(np.float32)
 bias = np.random.randn(16).astype(np.float32)
 
 # Forward pass
+```python
 output = conv2d_forward(img, weight, padding=1, bias=bias)
 print(output.shape) # (8, 16, 224, 224)
 ```
+
+### MNIST Train Performance
+Performance metrics for a single training epoch on the MNIST dataset, evaluated across batch sizes ranging from 32 to 1024.
+
+![MNIST Performance](mnist_performance.png)
+
+## 🛠️ Under the Hood: Why is it fast?
+
+MacroTorch doesn't just use naive loops. It achieves high performance through standard industry techniques implemented from scratch in Numba CUDA:
+
+- **Im2Col Transformation**: 4D Convolutions are lowered into 2D Matrix Multiplications (GEMM), allowing for high-throughput linear algebra operations instead of complex 4D indexing.
+- **Tiled Matmul with Shared Memory**: Our custom GEMM kernels use 16x16 shared memory tiles to maximize data reuse and minimize slow Global Memory bandwidth bottlenecks.
+- **Asynchronous Execution**: Leverages `torch.cuda.Event` and stream synchronization to ensure benchmarks measure raw kernel execution time, not host-side overhead.
+- **Atomic Gradient Accumulation**: The `col2im` operation in the backward pass uses highly efficient hardware-level atomic additions to aggregate gradients correctly across the batch.
+- **FP32 Accumulation**: Even when running FP16 benchmarks, weights are accumulated in FP32 precision to maintain numerical stability and match PyTorch accuracy.
+
 ## 📊 Performance Benchmarks (Tesla T4)
 
 MacroTorch achieves competitive performance, with **custom kernels that beat PyTorch** in specific operations:
@@ -97,6 +114,34 @@ MacroTorch achieves competitive performance, with **custom kernels that beat PyT
 
 **[View Detailed Benchmarks](BENCHMARKS.md)**
 
+## ⚠️ Limitations
+
+- No Tensor Core usage
+- No kernel fusion
+- Higher kernel launch overhead than CUDA C++
+- Not optimized for large-scale training workloads
+- Intended for research and learning, not production deployment
+
+## 🚧 Why PyTorch Is Faster Overall
+
+Despite optimizations, MacroTorch is slower than PyTorch for full model training due to:
+
+- cuDNN kernel fusion (Conv + Bias + Activation)
+- Tensor Core acceleration for FP16/TF32
+- CUTLASS-based GEMM implementations
+- CUDA Graphs reducing kernel launch overhead
+- Highly optimized memory layouts and vectorized loads
+
+MacroTorch kernels are written using Numba CUDA, which prioritizes clarity and flexibility over access to low-level hardware features such as WMMA instructions.
+
+## 🚀 Roadmap
+
+MacroTorch is an evolving project focusing on deep CUDA optimizations. Upcoming features include:
+
+- [ ] **Kernel Fusion**: Combining Convolution/Linear with ReLU/Bias to reduce memory round-trips.
+- [ ] **BatchNorm & LayerNorm**: Custom CUDA implementations for common normalization layers.
+- [ ] **Tensor Core Support**: Utilizing `wmma` (Warp Matrix Multiply-Accumulate) for hardware-accelerated FP16.
+- [ ] **Optimized ResNet/VGG**: End-to-end optimized model architectures.
 
 ## 📝 Acknowledgments
 

@@ -215,3 +215,14 @@ MacroTorch demonstrates:
 PyTorch uses highly optimized cuDNN for most operations. MacroTorch outperforms PyTorch **only on specific configurations** listed above, typically involving simpler memory access patterns or specific tensor shapes.
 
 **Note on 2D Legacy Kernel**: The "2D Legacy" weight gradient kernel is faster than PyTorch because it processes 3D inputs (N, H, W) treating them as a batch of 2D images, whereas PyTorch's convolution is inherently 4D (N, C, H, W). The MacroTorch 2D kernel is performing less computational work and memory indexing than the full 4D convolution.
+
+---
+
+### 🎯 Precision & Numerical Stability
+
+MacroTorch uses **FP32 accumulation** for its CUDA kernels even when processing FP16 inputs. This design choice provides several benefits:
+
+1.  **Higher Accuracy**: Minimizes rounding errors during the large summations required for convolution and matrix multiplication.
+2.  **Stable Gradients**: As shown in the Bias Backward FP16 results, MacroTorch (1.83e-04 error) is significantly more accurate than standard FP16 PyTorch implementations (2.27e-01 error) for deep accumulations.
+3.  **Consistency**: Ensures that switching between FP32 and FP16 modes results in nearly identical numerical outputs, aiding in debugging and model verification.
+

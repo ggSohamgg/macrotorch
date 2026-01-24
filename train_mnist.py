@@ -32,7 +32,7 @@ from urllib.request import urlopen
 import gzip
 import struct
 from numba import cuda
-from tqdm.auto import tqdm  # tqdm for notebooks/scripts
+from tqdm import tqdm  # tqdm for notebooks/scripts
 
 import macrotorch as mt
 

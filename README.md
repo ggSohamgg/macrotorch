@@ -74,7 +74,6 @@ weight = np.random.randn(16, 3, 3, 3).astype(np.float32)
 bias = np.random.randn(16).astype(np.float32)
 
 # Forward pass
-```python
 output = conv2d_forward(img, weight, padding=1, bias=bias)
 print(output.shape) # (8, 16, 224, 224)
 ```

@@ -15,7 +15,8 @@ macrotorch/
 │   ├── ops.py           # Dispatch functions
 │   └── layers.py        # Conv2d layer class
 └── examples/
-    └── benchmark.py     # Benchmark script
+    ├── benchmark.py              # Benchmark script
+    └── train_mnist_comparison.py # MNIST training & comparison
 ```
 
 ## 🚀 Quick Start
@@ -30,8 +31,25 @@ pip install -e .
 
 ### For Benchmarking (with PyTorch comparison)
 
+To run the examples in `examples/`, you need `torch` and `scipy` installed.
+You can install these dependencies using the `benchmark` extra:
+
 ```bash
 pip install -e .[benchmark]
+```
+
+### Running Benchmarks
+
+```bash
+python examples/benchmark.py
+```
+
+### Running MNIST Training Comparison (MacroTorch vs PyTorch)
+
+This script trains a CNN on MNIST using both frameworks and compares training time and accuracy.
+
+```bash
+python examples/train_mnist_comparison.py
 ```
 
 ### Basic Usage
@@ -50,75 +68,18 @@ bias = np.random.randn(16).astype(np.float32)
 output = conv2d_forward(img, weight, padding=1, bias=bias)
 print(output.shape) # (8, 16, 224, 224)
 ```
-
-### Using Conv2d Layer (OO Style)
-
-```python
-from macrotorch import Conv2d
-
-# Create layer with learnable weights
-# Conv2d(in_channels, out_channels, kernel_size, padding, bias)
-conv = Conv2d(3, 16, kernel_size=3, padding=1, bias=True)
-
-# Forward pass
-x = np.random.randn(8, 3, 224, 224).astype(np.float32)
-output = conv(x)
-
-# Backward pass
-grad_out = np.random.randn(*output.shape).astype(np.float32)
-grad_input = conv.backward(grad_out)
-
-# Access weights and gradients
-print(conv.weight.shape)      # (16, 3, 3, 3)
-print(conv.grad_weight.shape) # (16, 3, 3, 3)
-```
-
-## API Reference
-
-### `conv2d_forward(A, K, padding=0, bias=None, dtype='auto', verbose=False)`
-Performs 4D batched multi-channel convolution.
-
-**Parameters:**
-- `A` (ndarray): Input tensor (N, Cin, H, W)
-- `K` (ndarray): Kernel tensor (Cout, Cin, Kh, Kw)
-- `padding` (int): Zero-padding (default: 0)
-- `bias` (ndarray): Bias tensor (Cout,) (default: None → zeros)
-- `dtype` (str): 'fp32', 'fp16', or 'auto'
-
-**Returns:** Output array (N, Cout, H_out, W_out) in float32
-
-### `conv2d_input_backward(grad_out, K, padding=0, dtype='auto', verbose=False)`
-Computes gradient w.r.t. input (∂L/∂A).
-
-**Parameters:**
-- `grad_out` (ndarray): Gradient from next layer (N, Cout, H_out, W_out)
-- `K` (ndarray): Kernel from forward pass (Cout, Cin, Kh, Kw)
-
-**Returns:** Input gradient (N, Cin, H_in, W_in) in float32
-
-### `conv2d_weight_backward(grad_out, A, padding=0, dtype='auto', verbose=False)`
-Computes gradient w.r.t. weights (∂L/∂W).
-
-**Parameters:**
-- `grad_out` (ndarray): Gradient from next layer (N, Cout, H_out, W_out)
-- `A` (ndarray): Original input (N, Cin, H_in, W_in)
-
-**Returns:** Weight gradient (Cout, Cin, Kh, Kw) in float32
-
-### `Conv2d(in_channels, out_channels, kernel_size, padding=0, bias=True, dtype='fp32')`
-Layer class with learnable weights. Handles storing gradients internally.
-
----
-
 ## 📊 Performance Benchmarks (Tesla T4)
 
 MacroTorch achieves competitive performance, with **custom kernels that beat PyTorch** in specific operations:
 
 | Kernel | Configuration | vs PyTorch |
 | :--- | :--- | :---: |
-| **Weight Backward (2D Legacy)** | 8×128×128, 3×3, FP32 | **🏆 5.3x faster** |
-| **Weight Backward (2D Legacy)** | 8×128×128, 3×3, FP16 | **🏆 3.5x faster** |
-| **ReLU Backward** | 1024×1024, FP32 | **🏆 1.8x faster** |
+| **Weight Backward (2D Legacy)** | 8×128×128, 3×3, FP32 | **4.1x faster** |
+| **Weight Backward (2D Legacy)** | 8×128×128, 3×3, FP16 | **3.5x faster** |
+| **MaxPool2D Backward** | 8×64×128×128, pool=2 | **2.6x faster** |
+| **Softmax Backward** | 8×10×1×1, FP32 | **2.7x faster** |
+| **Cross-Entropy Backward** | 256×1000, FP32 | **2.2x faster** |
+| **ReLU Backward** | 1024×1024, FP32 | **1.7x faster** |
 
 ### Additional Highlights
 - **10-17x speedup** over CPU for forward/backward passes
@@ -127,11 +88,6 @@ MacroTorch achieves competitive performance, with **custom kernels that beat PyT
 
 **[View Detailed Benchmarks](BENCHMARKS.md)**
 
-## Running Benchmarks
-
-```bash
-python examples/benchmark.py
-```
 
 ## 📝 Acknowledgments
 

@@ -1,5 +1,5 @@
 import numpy as np
-from .ops import forward, input_backward, bias_backward
+from .ops import forward, input_backward, bias_backward, weight_backward
 
 
 class Conv2d:
